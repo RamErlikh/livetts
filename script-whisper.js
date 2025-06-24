@@ -1079,6 +1079,16 @@ class LiveTranslator {
                         fn: () => this.translateWithMyMemory(text, sourceLanguage), 
                         name: 'MyMemory',
                         corsOptimized: true
+                    },
+                    { 
+                        fn: () => this.translateWithLibreTranslate(text, sourceLanguage), 
+                        name: 'LibreTranslate',
+                        corsOptimized: true
+                    },
+                    { 
+                        fn: () => this.translateWithDictionary(text, sourceLanguage), 
+                        name: 'Dictionary',
+                        corsOptimized: true
                     }
                 ];
                 
@@ -1104,15 +1114,21 @@ class LiveTranslator {
             if (!success) {
                 translatedText = text; // Just show original text if translation fails
                 serviceUsed = 'No translation available';
+                console.warn('All translation services failed - showing original text');
             }
             
+            // Always update the translation display
             this.elements.translatedText.textContent = translatedText;
             this.addToHistory(text, translatedText);
             
-            // Only speak the actual translated text, not language prefixes
+            // TTS: Only speak if we have a successful translation and auto-speak is enabled
             if (this.elements.autoSpeak.checked && success && translatedText && 
+                translatedText !== text && // Don't speak if it's the same as original
                 !translatedText.includes('[') && !translatedText.includes('→')) {
+                console.log('🔊 Speaking translation:', translatedText);
                 this.speakText(translatedText);
+            } else if (this.elements.autoSpeak.checked && !success) {
+                console.log('🔇 Not speaking - no valid translation available');
             }
             
             // Show which service was used
@@ -1161,45 +1177,139 @@ class LiveTranslator {
     }
     
     async translateWithMyMemory(text, sourceLanguage = null) {
-        const sourceLang = sourceLanguage || (this.currentLanguage === 'auto' ? 'en' : this.currentLanguage);
+        const sourceLang = sourceLanguage || (this.currentLanguage === 'auto' ? 'ru' : this.currentLanguage);
         const limitedText = text.length > 500 ? text.substring(0, 500) + '...' : text;
         
         // Use GET request to avoid CORS preflight issues
         const params = new URLSearchParams({
             q: limitedText,
             langpair: `${sourceLang}|${this.targetLanguage}`,
-            de: 'a@b.c', // Required parameter for some reason
+            de: 'translator@example.com', // Better email format
             mt: '1'
         });
         
         const url = `https://api.mymemory.translated.net/get?${params.toString()}`;
         
-        const response = await fetch(url, {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json',
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                    'User-Agent': 'LiveTTSTranslator/1.0'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`MyMemory HTTP error: ${response.status}`);
             }
-        });
-        
-        if (!response.ok) {
-            throw new Error(`MyMemory error: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        
-        if (data.responseStatus === 200 && data.responseData?.translatedText) {
-            const translation = data.responseData.translatedText;
-            // Check if translation is valid (not just the same text)
-            if (translation.toLowerCase() !== limitedText.toLowerCase() && 
-                !translation.includes('TRANSLATED BY GOOGLE') &&
-                !translation.includes('MYMEMORY WARNING')) {
-                return translation;
+            
+            const data = await response.json();
+            console.log('MyMemory response:', data);
+            
+            if (data.responseStatus === 200 && data.responseData?.translatedText) {
+                const translation = data.responseData.translatedText.trim();
+                
+                // Check if translation is valid (not just the same text or error messages)
+                if (translation && 
+                    translation.toLowerCase() !== limitedText.toLowerCase() && 
+                    !translation.includes('TRANSLATED BY GOOGLE') &&
+                    !translation.includes('MYMEMORY WARNING') &&
+                    !translation.includes('QUOTA EXCEEDED') &&
+                    translation.length > 0) {
+                    console.log('✅ MyMemory translation successful:', translation);
+                    return translation;
+                }
             }
+            
+            // If we get here, translation wasn't valid
+            console.warn('MyMemory returned invalid translation:', data);
+            throw new Error('MyMemory: No valid translation available');
+            
+        } catch (error) {
+            console.error('MyMemory translation error:', error);
+            throw error;
         }
-        
-        throw new Error('MyMemory: No valid translation');
     }
-
+    
+    async translateWithLibreTranslate(text, sourceLanguage = null) {
+        const sourceLang = sourceLanguage || (this.currentLanguage === 'auto' ? 'ru' : this.currentLanguage);
+        const limitedText = text.length > 500 ? text.substring(0, 500) + '...' : text;
+        
+        // Try different LibreTranslate instances
+        const instances = [
+            'https://libretranslate.de/translate',
+            'https://translate.argosopentech.com/translate',
+            'https://libretranslate.com/translate'
+        ];
+        
+        for (const apiUrl of instances) {
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        q: limitedText,
+                        source: sourceLang,
+                        target: this.targetLanguage,
+                        format: 'text'
+                    })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.translatedText && data.translatedText.trim()) {
+                        console.log('✅ LibreTranslate translation successful:', data.translatedText);
+                        return data.translatedText.trim();
+                    }
+                }
+            } catch (error) {
+                console.warn(`LibreTranslate instance ${apiUrl} failed:`, error);
+                continue;
+            }
+        }
+        
+        throw new Error('All LibreTranslate instances failed');
+    }
+    
+    async translateWithDictionary(text, sourceLanguage = null) {
+        const russianDictionary = {
+            'да': 'yes',
+            'нет': 'no',
+            'привет': 'hello',
+            'пока': 'bye',
+            'спасибо': 'thank you',
+            'пожалуйста': 'please',
+            'извините': 'excuse me',
+            'не понятно': 'not clear',
+            'не очень': 'not very',
+            'еще раз': 'once more',
+            'что это': 'what is this',
+            'скажем': 'let\'s say',
+            'очень хорошо': 'very good',
+            'как дела': 'how are you',
+            'все хорошо': 'everything is good'
+        };
+        
+        const lowerText = text.toLowerCase();
+        
+        // Check for exact matches first
+        if (russianDictionary[lowerText]) {
+            return russianDictionary[lowerText];
+        }
+        
+        // Check for partial matches
+        for (const [russian, english] of Object.entries(russianDictionary)) {
+            if (lowerText.includes(russian)) {
+                return `${english} (partial match)`;
+            }
+        }
+        
+        throw new Error('No dictionary translation found');
+    }
+    
     async translateWithFallback(text, sourceLanguage = null) {
         const sourceLang = sourceLanguage || this.currentLanguage;
         
@@ -1208,11 +1318,12 @@ class LiveTranslator {
             return text;
         }
         
-        // Create a simple language indicator
+        // Create a simple language indicator for display
         const sourceName = this.getLanguageName(sourceLang);
         const targetName = this.getLanguageName(this.targetLanguage);
         
-        return `[${sourceName} → ${targetName}] ${text}`;
+        // Return the original text with a note that translation failed
+        return `${text} [${sourceName}→${targetName} translation unavailable]`;
     }
     
     getLanguageName(code) {
@@ -1226,12 +1337,37 @@ class LiveTranslator {
     }
     
     speakText(text) {
-        if ('speechSynthesis' in window) {
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = this.getProperLanguageCode(this.targetLanguage);
-            utterance.rate = 0.9;
-            utterance.volume = 0.8;
-            speechSynthesis.speak(utterance);
+        if ('speechSynthesis' in window && text && text.trim()) {
+            try {
+                // Cancel any ongoing speech
+                speechSynthesis.cancel();
+                
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = this.getProperLanguageCode(this.targetLanguage);
+                utterance.rate = 0.9;
+                utterance.volume = 0.8;
+                utterance.pitch = 1.0;
+                
+                // Add event listeners for debugging
+                utterance.onstart = () => {
+                    console.log('🔊 TTS started speaking:', text);
+                };
+                
+                utterance.onend = () => {
+                    console.log('🔊 TTS finished speaking');
+                };
+                
+                utterance.onerror = (event) => {
+                    console.error('🔇 TTS error:', event.error);
+                };
+                
+                speechSynthesis.speak(utterance);
+                
+            } catch (error) {
+                console.error('TTS error:', error);
+            }
+        } else {
+            console.warn('TTS not available or empty text provided');
         }
     }
     
