@@ -547,7 +547,7 @@ class LiveTranslator {
             console.log(`Processing ${audio.length} samples (${audio.length / 16000}s), RMS: ${rms.toFixed(4)}`);
             
             const result = await this.pipeline(audio, {
-                language: this.currentLanguage === 'auto' ? null : this.currentLanguage,
+                language: this.currentLanguage === 'auto' ? 'ru' : this.currentLanguage,
                 task: 'transcribe',
                 return_timestamps: false,
                 chunk_length_s: 30,
@@ -568,8 +568,11 @@ class LiveTranslator {
                 console.log(`Transcription validation result: ${isValid ? 'VALID' : 'INVALID'} - "${transcription}"`);
                 
                 if (isValid) {
-                    // Update detected language if available
-                    if (result.language) {
+                    // Set detected language to Russian when using auto-detect
+                    if (this.currentLanguage === 'auto') {
+                        this.lastDetectedLanguage = 'ru'; // Force Russian detection
+                        console.log('Forced language detection to Russian');
+                    } else if (result.language) {
                         this.lastDetectedLanguage = result.language;
                         console.log(`Whisper detected language: ${result.language}`);
                     }
@@ -651,7 +654,7 @@ class LiveTranslator {
             
             // Transcribe with Whisper
             const result = await this.pipeline(combinedAudio, {
-                language: this.currentLanguage === 'auto' ? null : this.currentLanguage,
+                language: this.currentLanguage === 'auto' ? 'ru' : this.currentLanguage,
                 task: 'transcribe',
                 return_timestamps: false,
                 chunk_length_s: 30,
@@ -668,8 +671,11 @@ class LiveTranslator {
                 console.log('Raw transcription:', transcription);
                 
                 if (this.isValidTranscription(transcription)) {
-                    // Update detected language
-                    if (result.language) {
+                    // Set detected language to Russian when using auto-detect
+                    if (this.currentLanguage === 'auto') {
+                        this.lastDetectedLanguage = 'ru'; // Force Russian detection
+                        console.log('Forced language detection to Russian (Web Audio)');
+                    } else if (result.language) {
                         this.lastDetectedLanguage = result.language;
                         console.log(`Whisper detected language: ${result.language}`);
                     }
@@ -1081,11 +1087,6 @@ class LiveTranslator {
                         corsOptimized: true
                     },
                     { 
-                        fn: () => this.translateWithLibreTranslate(text, sourceLanguage), 
-                        name: 'LibreTranslate',
-                        corsOptimized: true
-                    },
-                    { 
                         fn: () => this.translateWithDictionary(text, sourceLanguage), 
                         name: 'Dictionary',
                         corsOptimized: true
@@ -1177,8 +1178,15 @@ class LiveTranslator {
     }
     
     async translateWithMyMemory(text, sourceLanguage = null) {
-        const sourceLang = sourceLanguage || (this.currentLanguage === 'auto' ? 'ru' : this.currentLanguage);
+        // Determine proper source language - never use 'auto'
+        let sourceLang = sourceLanguage || this.lastDetectedLanguage || 'ru';
+        if (sourceLang === 'auto') {
+            sourceLang = 'ru'; // Default to Russian
+        }
+        
         const limitedText = text.length > 500 ? text.substring(0, 500) + '...' : text;
+        
+        console.log(`MyMemory: Translating from ${sourceLang} to ${this.targetLanguage}`);
         
         // Use GET request to avoid CORS preflight issues
         const params = new URLSearchParams({
@@ -1231,51 +1239,9 @@ class LiveTranslator {
         }
     }
     
-    async translateWithLibreTranslate(text, sourceLanguage = null) {
-        const sourceLang = sourceLanguage || (this.currentLanguage === 'auto' ? 'ru' : this.currentLanguage);
-        const limitedText = text.length > 500 ? text.substring(0, 500) + '...' : text;
-        
-        // Try different LibreTranslate instances
-        const instances = [
-            'https://libretranslate.de/translate',
-            'https://translate.argosopentech.com/translate',
-            'https://libretranslate.com/translate'
-        ];
-        
-        for (const apiUrl of instances) {
-            try {
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        q: limitedText,
-                        source: sourceLang,
-                        target: this.targetLanguage,
-                        format: 'text'
-                    })
-                });
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.translatedText && data.translatedText.trim()) {
-                        console.log('✅ LibreTranslate translation successful:', data.translatedText);
-                        return data.translatedText.trim();
-                    }
-                }
-            } catch (error) {
-                console.warn(`LibreTranslate instance ${apiUrl} failed:`, error);
-                continue;
-            }
-        }
-        
-        throw new Error('All LibreTranslate instances failed');
-    }
-    
     async translateWithDictionary(text, sourceLanguage = null) {
         const russianDictionary = {
+            // Basic words
             'да': 'yes',
             'нет': 'no',
             'привет': 'hello',
@@ -1283,6 +1249,8 @@ class LiveTranslator {
             'спасибо': 'thank you',
             'пожалуйста': 'please',
             'извините': 'excuse me',
+            
+            // Common phrases from your speech
             'не понятно': 'not clear',
             'не очень': 'not very',
             'еще раз': 'once more',
@@ -1290,23 +1258,76 @@ class LiveTranslator {
             'скажем': 'let\'s say',
             'очень хорошо': 'very good',
             'как дела': 'how are you',
-            'все хорошо': 'everything is good'
+            'все хорошо': 'everything is good',
+            
+            // Additional common phrases
+            'что-то': 'something',
+            'а что': 'and what',
+            'ну что': 'well what',
+            'может быть': 'maybe',
+            'конечно': 'of course',
+            'хорошо': 'good',
+            'плохо': 'bad',
+            'сейчас': 'now',
+            'потом': 'later',
+            'здесь': 'here',
+            'там': 'there',
+            'когда': 'when',
+            'где': 'where',
+            'как': 'how',
+            'почему': 'why',
+            'кто': 'who',
+            'что': 'what',
+            
+            // Single letters/characters that might be detected
+            'а': 'ah',
+            'и': 'and',
+            'в': 'in',
+            'на': 'on',
+            'с': 'with',
+            'к': 'to',
+            'от': 'from',
+            'по': 'by',
+            'за': 'for',
+            'о': 'about',
         };
         
-        const lowerText = text.toLowerCase();
+        const lowerText = text.toLowerCase().trim();
+        console.log(`Dictionary: Looking for translation of "${lowerText}"`);
         
         // Check for exact matches first
         if (russianDictionary[lowerText]) {
+            console.log(`✅ Dictionary exact match found: ${russianDictionary[lowerText]}`);
             return russianDictionary[lowerText];
         }
         
-        // Check for partial matches
+        // Remove punctuation and try again
+        const cleanText = lowerText.replace(/[^\w\s]/g, '').trim();
+        if (cleanText !== lowerText && russianDictionary[cleanText]) {
+            console.log(`✅ Dictionary clean match found: ${russianDictionary[cleanText]}`);
+            return russianDictionary[cleanText];
+        }
+        
+        // Check for partial matches (phrase contains dictionary word)
+        let bestMatch = '';
+        let bestScore = 0;
+        
         for (const [russian, english] of Object.entries(russianDictionary)) {
             if (lowerText.includes(russian)) {
-                return `${english} (partial match)`;
+                const score = russian.length; // Longer matches get higher priority
+                if (score > bestScore) {
+                    bestMatch = english;
+                    bestScore = score;
+                }
             }
         }
         
+        if (bestMatch) {
+            console.log(`✅ Dictionary partial match found: ${bestMatch}`);
+            return `${bestMatch} (partial)`;
+        }
+        
+        console.log('❌ No dictionary translation found');
         throw new Error('No dictionary translation found');
     }
     
