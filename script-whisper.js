@@ -526,69 +526,40 @@ class LiveTranslator {
         }
     }
     
-    // Enhanced transcription validation - made less aggressive
+    // Enhanced transcription validation - made much less aggressive for international languages
     isValidTranscription(text) {
         if (!text || text.length < 1) return false;
         
-        // Only filter out obvious artifacts, not normal speech
-        const clearArtifacts = [
-            '[Music]', '[Applause]', '[Noise]', '[Background music]', '[Laughter]'
+        // Only filter out obvious technical artifacts
+        const technicalArtifacts = [
+            '[Music]', '[Applause]', '[Noise]', '[Background music]', '[Laughter]', '[BLANK_AUDIO]'
         ];
         
-        // Check for exact matches with clear artifacts only
-        if (clearArtifacts.some(artifact => text.toLowerCase().includes(artifact.toLowerCase()))) {
+        // Check for exact matches with technical artifacts only
+        const lowerText = text.toLowerCase();
+        if (technicalArtifacts.some(artifact => lowerText.includes(artifact.toLowerCase()))) {
             return false;
         }
         
-        // Only filter very repetitive patterns (relaxed from previous version)
-        const severeRepetitivePatterns = [
-            /^(.)\1{10,}$/, // Single character repeated 10+ times (was 5+)
-            /^\[(.)\]\s*\[(.)\]\s*\[(.)\]\s*\[(.)\]/, // 4+ bracketed single characters
-            /^(.)\s+\1\s+\1\s+\1\s+\1\s+\1/, // 6+ spaced repetitive characters (was 4+)
+        // Only filter VERY extreme repetitive patterns
+        const extremePatterns = [
+            /^(.)\1{20,}$/, // Single character repeated 20+ times
+            /^\[(.)\]\s*\[(.)\]\s*\[(.)\]\s*\[(.)\]\s*\[(.)\]/, // 5+ bracketed characters
         ];
         
-        if (severeRepetitivePatterns.some(pattern => pattern.test(text))) {
+        if (extremePatterns.some(pattern => pattern.test(text))) {
+            console.log('Filtered extreme pattern:', text);
             return false;
         }
         
-        // Only filter if a single character makes up more than 80% (was 60%)
-        const charCounts = {};
-        let totalChars = 0;
-        
-        for (const char of text.toLowerCase()) {
-            if (char.match(/[a-z]/)) {
-                charCounts[char] = (charCounts[char] || 0) + 1;
-                totalChars++;
-            }
-        }
-        
-        for (const [char, count] of Object.entries(charCounts)) {
-            if (count / totalChars > 0.8) {
-                return false;
-            }
-        }
-        
-        // Check for patterns that look like encoding artifacts
+        // Check for encoding artifacts only
         if (text.includes('') || text.includes('\ufffd')) {
+            console.log('Filtered encoding artifact:', text);
             return false;
         }
         
-        // Removed vowel requirement - many languages don't follow this pattern
-        
-        // Only filter if 6+ consecutive identical words (was 4+)
-        const words = text.split(/\s+/);
-        let consecutiveCount = 1;
-        for (let i = 1; i < words.length; i++) {
-            if (words[i].toLowerCase() === words[i-1].toLowerCase()) {
-                consecutiveCount++;
-                if (consecutiveCount >= 6) {
-                    return false;
-                }
-            } else {
-                consecutiveCount = 1;
-            }
-        }
-        
+        // Allow all normal text - international languages, short phrases, etc.
+        console.log('Validation passed for:', text);
         return true;
     }
     
