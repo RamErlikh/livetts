@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live TTS Translator Overlay - Whisper AI</title>
+    <link rel="stylesheet" href="style.css">
+    
+    <!-- Required headers for Whisper AI -->
+    <meta http-equiv="Cross-Origin-Embedder-Policy" content="require-corp">
+    <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin">
+    
+    <style>
+        /* Overlay-specific styles */
+        body {
+            margin: 0;
+            padding: 10px;
+            background: transparent;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+        
+        .overlay-container {
+            max-width: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            border-radius: 10px;
+            padding: 15px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        }
+        
+        .overlay-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #fff;
+        }
+        
+        .overlay-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .overlay-controls {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .overlay-btn {
+            padding: 5px 12px;
+            border: none;
+            border-radius: 5px;
+            background: #4CAF50;
+            color: white;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background 0.3s;
+        }
+        
+        .overlay-btn:hover {
+            background: #45a049;
+        }
+        
+        .overlay-btn:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        .overlay-btn.stop {
+            background: #f44336;
+        }
+        
+        .overlay-btn.stop:hover {
+            background: #da190b;
+        }
+        
+        .overlay-text-display {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .overlay-text-box {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 12px;
+            border-left: 4px solid;
+        }
+        
+        .overlay-text-box.original {
+            border-left-color: #2196F3;
+        }
+        
+        .overlay-text-box.translated {
+            border-left-color: #4CAF50;
+        }
+        
+        .overlay-text-label {
+            font-size: 12px;
+            font-weight: bold;
+            color: #ccc;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .overlay-text-content {
+            font-size: var(--font-size, 18px);
+            color: #fff;
+            line-height: 1.4;
+            min-height: 20px;
+            word-wrap: break-word;
+        }
+        
+        .overlay-language-info {
+            font-size: 11px;
+            color: #888;
+            margin-top: 5px;
+        }
+        
+        /* Listening animation */
+        .listening .overlay-status::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            background: #4CAF50;
+            border-radius: 50%;
+            margin-right: 5px;
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+        
+        /* Responsive design for different overlay sizes */
+        @media (max-width: 600px) {
+            .overlay-header {
+                flex-direction: column;
+                gap: 10px;
+            }
+            
+            .overlay-text-content {
+                font-size: 16px;
+            }
+        }
+        
+        /* Hide controls in minimal mode */
+        .overlay-container.minimal .overlay-controls {
+            display: none;
+        }
+        
+        .overlay-container.minimal .overlay-header {
+            margin-bottom: 5px;
+        }
+        
+        /* Error display */
+        .error-message {
+            background: rgba(244, 67, 54, 0.1);
+            border: 1px solid #f44336;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 10px 0;
+            color: #f44336;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-container" id="overlayContainer">
+        <div class="overlay-header">
+            <div class="overlay-status">
+                <span id="micStatus">🎤 Off</span>
+                <span id="statusText">Initializing Whisper AI...</span>
+            </div>
+            <div class="overlay-controls">
+                <button id="startBtn" class="overlay-btn" disabled>Start</button>
+                <button id="stopBtn" class="overlay-btn stop" disabled>Stop</button>
+                <button id="refreshBtn" class="overlay-btn" onclick="location.reload()">Refresh</button>
+            </div>
+        </div>
+        
+        <div id="errorContainer"></div>
+        
+        <div class="overlay-text-display">
+            <div class="overlay-text-box original">
+                <div class="overlay-text-label">Original Speech</div>
+                <div id="originalText" class="overlay-text-content">
+                    Waiting for speech input...
+                </div>
+                <div class="overlay-language-info" id="originalLang"></div>
+            </div>
+            
+            <div class="overlay-text-box translated">
+                <div class="overlay-text-label">Translation</div>
+                <div id="translatedText" class="overlay-text-content">
+                    Translation will appear here...
+                </div>
+                <div class="overlay-language-info" id="translatedLang"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden elements for compatibility -->
+    <div style="display: none;">
+        <select id="inputLanguage">
+            <option value="auto" selected>Auto-detect (Whisper AI)</option>
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="it">Italian</option>
+            <option value="pt">Portuguese</option>
+            <option value="ru">Russian</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="zh">Chinese</option>
+            <option value="ar">Arabic</option>
+            <option value="hi">Hindi</option>
+        </select>
+        
+        <select id="outputLanguage">
+            <option value="en" selected>English</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="it">Italian</option>
+            <option value="pt">Portuguese</option>
+            <option value="ru">Russian</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="zh">Chinese</option>
+            <option value="ar">Arabic</option>
+            <option value="hi">Hindi</option>
+        </select>
+        
+        <div id="historyContainer"></div>
+        <button id="clearHistory"></button>
+        <input type="range" id="fontSize" min="16" max="32" value="18">
+        <span id="fontSizeValue">18px</span>
+        <input type="range" id="bgOpacity" min="10" max="100" value="80">
+        <span id="bgOpacityValue">80%</span>
+        <input type="checkbox" id="autoSpeak">
+        <input type="password" id="apiKey">
+        <button id="saveApiKey"></button>
+    </div>
+
+    <script>
+        // Error handling and logging
+        function showError(message) {
+            const errorContainer = document.getElementById('errorContainer');
+            errorContainer.innerHTML = `<div class="error-message">⚠️ ${message}</div>`;
+            console.error('Overlay Error:', message);
+        }
+        
+        // Enhanced error handling
+        window.addEventListener('error', (event) => {
+            showError(`Script error: ${event.message}`);
+        });
+        
+        window.addEventListener('unhandledrejection', (event) => {
+            showError(`Promise error: ${event.reason}`);
+            event.preventDefault();
+        });
+        
+        // Overlay-specific enhancements
+        document.addEventListener('DOMContentLoaded', () => {
+            // Set overlay mode
+            document.body.classList.add('overlay-mode');
+            
+            // URL parameters for customization
+            const urlParams = new URLSearchParams(window.location.search);
+            
+            // Minimal mode (hide controls)
+            if (urlParams.get('minimal') === 'true') {
+                document.getElementById('overlayContainer').classList.add('minimal');
+            }
+            
+            // Custom font size
+            const fontSize = urlParams.get('fontSize');
+            if (fontSize) {
+                document.documentElement.style.setProperty('--font-size', fontSize + 'px');
+                document.getElementById('fontSize').value = fontSize;
+            }
+            
+            // Custom background opacity
+            const bgOpacity = urlParams.get('bgOpacity');
+            if (bgOpacity) {
+                document.querySelector('.overlay-container').style.background = 
+                    `rgba(0, 0, 0, ${bgOpacity / 100})`;
+                document.getElementById('bgOpacity').value = bgOpacity;
+            }
+            
+            // Language settings from URL
+            const inputLang = urlParams.get('inputLang');
+            if (inputLang) {
+                document.getElementById('inputLanguage').value = inputLang;
+            }
+            
+            const outputLang = urlParams.get('outputLang');
+            if (outputLang) {
+                document.getElementById('outputLanguage').value = outputLang;
+            }
+            
+            // Update language info display
+            const originalLangDiv = document.getElementById('originalLang');
+            const translatedLangDiv = document.getElementById('translatedLang');
+            
+            // Monitor for translator initialization
+            let checkInterval = setInterval(() => {
+                if (window.translator) {
+                    clearInterval(checkInterval);
+                    
+                    // Override the translator's updateStatus to show language info
+                    const originalUpdateStatus = window.translator.updateStatus;
+                    if (originalUpdateStatus) {
+                        window.translator.updateStatus = function(status, micStatus) {
+                            originalUpdateStatus.call(this, status, micStatus);
+                            
+                            // Update language info in overlay
+                            const inputSelect = document.getElementById('inputLanguage');
+                            const outputSelect = document.getElementById('outputLanguage');
+                            
+                            if (inputSelect && outputSelect) {
+                                const inputLangText = inputSelect.options[inputSelect.selectedIndex].text;
+                                const outputLangText = outputSelect.options[outputSelect.selectedIndex].text;
+                                
+                                originalLangDiv.textContent = `Input: ${inputLangText}`;
+                                translatedLangDiv.textContent = `Output: ${outputLangText}`;
+                            }
+                        };
+                    }
+                }
+            }, 100);
+            
+            // Clear check after 10 seconds
+            setTimeout(() => {
+                if (checkInterval) {
+                    clearInterval(checkInterval);
+                }
+            }, 10000);
+        });
+        
+        // Keyboard shortcuts for overlay
+        document.addEventListener('keydown', (e) => {
+            try {
+                switch(e.key) {
+                    case 'F1':
+                        e.preventDefault();
+                        const startBtn = document.getElementById('startBtn');
+                        if (startBtn && !startBtn.disabled) {
+                            startBtn.click();
+                        }
+                        break;
+                    case 'F2':
+                    case 'Escape':
+                        e.preventDefault();
+                        const stopBtn = document.getElementById('stopBtn');
+                        if (stopBtn && !stopBtn.disabled) {
+                            stopBtn.click();
+                        }
+                        break;
+                    case 'F5':
+                        e.preventDefault();
+                        location.reload();
+                        break;
+                }
+            } catch (error) {
+                showError(`Keyboard shortcut error: ${error.message}`);
+            }
+        });
+    </script>
+
+    <script type="module">
+        try {
+            // Import and initialize the main script
+            import('./script-whisper.js').then(module => {
+                console.log('Script loaded successfully');
+            }).catch(error => {
+                console.error('Failed to load main script:', error);
+                showError('Failed to load main application script');
+                
+                // Fallback: try loading as regular script
+                const script = document.createElement('script');
+                script.src = 'script-whisper.js';
+                script.onerror = () => showError('Unable to load any version of the main script');
+                document.head.appendChild(script);
+            });
+        } catch (error) {
+            console.error('Module import error:', error);
+            showError('Browser does not support ES6 modules');
+            
+            // Fallback for older browsers
+            const script = document.createElement('script');
+            script.src = 'script-whisper.js';
+            document.head.appendChild(script);
+        }
+    </script>
+</body>
+</html> 
