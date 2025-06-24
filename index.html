@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎤 Live TTS Translator - Whisper AI</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#1a1a2e">
+    <meta name="description" content="Real-time speech recognition and translation using Whisper AI">
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loadingScreen" class="loading-screen">
+        <div class="loading-content">
+            <div class="whisper-logo">
+                <div class="microphone-icon">🎤</div>
+                <div class="sound-waves">
+                    <div class="wave"></div>
+                    <div class="wave"></div>
+                    <div class="wave"></div>
+                </div>
+            </div>
+            
+            <h1>Whisper AI</h1>
+            <p class="subtitle">Real-time speech recognition and translation</p>
+            
+            <div class="model-info">
+                <p>Loading <strong>whisper-base</strong> with WebGPU acceleration for optimal performance. The model (~200 MB) will be cached for faster loading next time.</p>
+                
+                <p>Everything runs directly in your browser using 🤗 <strong>Transformers.js</strong> and ONNX Runtime Web with WebGPU support!</p>
+            </div>
+            
+            <div id="loadingProgress" class="loading-progress">
+                <div class="progress-bar">
+                    <div class="progress-fill"></div>
+                </div>
+                <div class="progress-text">Initializing...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Application -->
+    <div id="mainApp" class="main-app" style="display: none;">
+        <div class="container">
+            <header class="header">
+                <h1>🎤 Live TTS Translator</h1>
+                <p class="subtitle">Powered by Whisper AI</p>
+            </header>
+
+            <div class="controls">
+                <div class="control-group">
+                    <button id="startBtn" class="btn btn-primary" disabled>
+                        <span class="btn-icon">🎤</span>
+                        Start Listening
+                    </button>
+                    <button id="stopBtn" class="btn btn-secondary" disabled>
+                        <span class="btn-icon">⏹️</span>
+                        Stop
+                    </button>
+                </div>
+
+                <div class="language-controls">
+                    <div class="language-group">
+                        <label for="inputLanguage">Input Language:</label>
+                        <select id="inputLanguage">
+                            <option value="auto">Auto-detect</option>
+                            <option value="en">English</option>
+                            <option value="es">Spanish</option>
+                            <option value="fr">French</option>
+                            <option value="de">German</option>
+                            <option value="it">Italian</option>
+                            <option value="pt">Portuguese</option>
+                            <option value="ru">Russian</option>
+                            <option value="ja">Japanese</option>
+                            <option value="ko">Korean</option>
+                            <option value="zh">Chinese</option>
+                            <option value="ar">Arabic</option>
+                            <option value="hi">Hindi</option>
+                        </select>
+                    </div>
+
+                    <div class="language-group">
+                        <label for="outputLanguage">Output Language:</label>
+                        <select id="outputLanguage">
+                            <option value="en">English</option>
+                            <option value="es">Spanish</option>
+                            <option value="fr">French</option>
+                            <option value="de">German</option>
+                            <option value="it">Italian</option>
+                            <option value="pt">Portuguese</option>
+                            <option value="ru">Russian</option>
+                            <option value="ja">Japanese</option>
+                            <option value="ko">Korean</option>
+                            <option value="zh">Chinese</option>
+                            <option value="ar">Arabic</option>
+                            <option value="hi">Hindi</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="status-label">Status:</span>
+                    <span id="statusText" class="status-text">Ready</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Microphone:</span>
+                    <span id="micStatus" class="mic-status">🎤 Off</span>
+                </div>
+            </div>
+
+            <div class="translation-display">
+                <div class="text-box original-box">
+                    <div class="text-label">Original Speech</div>
+                    <div id="originalText" class="text-content">Speak to see transcription here...</div>
+                </div>
+
+                <div class="arrow">→</div>
+
+                <div class="text-box translated-box">
+                    <div class="text-label">Translation</div>
+                    <div id="translatedText" class="text-content">Translation will appear here...</div>
+                </div>
+            </div>
+
+            <div class="settings-panel">
+                <details>
+                    <summary>⚙️ Settings</summary>
+                    <div class="settings-content">
+                        <div class="setting-group">
+                            <label for="fontSize">Font Size: <span id="fontSizeValue">18px</span></label>
+                            <input type="range" id="fontSize" min="14" max="32" value="18">
+                        </div>
+
+                        <div class="setting-group">
+                            <label for="bgOpacity">Background Opacity: <span id="bgOpacityValue">90%</span></label>
+                            <input type="range" id="bgOpacity" min="10" max="100" value="90">
+                        </div>
+
+                        <div class="setting-group">
+                            <label>
+                                <input type="checkbox" id="autoSpeak" checked>
+                                Auto-speak translations
+                            </label>
+                        </div>
+
+                        <div class="setting-group">
+                            <label>
+                                <input type="checkbox" id="overlayMode">
+                                Overlay Mode (for streaming)
+                            </label>
+                        </div>
+
+                        <div class="setting-group">
+                            <label for="apiKey">Google Translate API Key (optional):</label>
+                            <input type="password" id="apiKey" placeholder="Enter API key for unlimited translations">
+                            <button id="saveApiKey" class="btn btn-small">Save</button>
+                        </div>
+                    </div>
+                </details>
+            </div>
+
+            <div class="history-section">
+                <details>
+                    <summary>📝 Translation History</summary>
+                    <div class="history-content">
+                        <button id="clearHistory" class="btn btn-small">Clear History</button>
+                        <div id="historyContainer" class="history-container"></div>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="script-whisper.js"></script>
+</body>
+</html> 
