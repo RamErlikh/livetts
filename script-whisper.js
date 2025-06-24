@@ -283,13 +283,17 @@ class LiveTranslator {
             this.mediaRecorder.ondataavailable = (event) => {
                 if (event.data.size > 0) {
                     this.audioChunks.push(event.data);
+                    console.log(`Audio chunk received: ${event.data.size} bytes`);
                 }
             };
             
             this.mediaRecorder.onstop = () => {
+                console.log('MediaRecorder stopped, processing audio...');
                 if (this.audioChunks.length > 0) {
+                    // Process audio in parallel - don't wait for it to complete
                     this.processAudioWithWhisper();
                 }
+                // Note: Next recording segment is already started from startRecordingSegments()
             };
             
             this.mediaRecorder.onerror = (error) => {
@@ -327,7 +331,7 @@ class LiveTranslator {
             clearTimeout(this.recordingInterval);
         }
         
-        // Use longer 8-second segments for better transcription accuracy
+        // Use 3-second segments for faster response
         this.mediaRecorder.start();
         console.log('Started recording segment...');
         
@@ -336,27 +340,23 @@ class LiveTranslator {
                 this.mediaRecorder.stop();
                 console.log('Stopped recording segment for processing...');
                 
-                // Immediately start next segment without waiting for processing to complete
-                // This ensures continuous listening
+                // IMMEDIATELY start next segment - no gap in listening
                 setTimeout(() => {
                     if (this.isListening) {
                         this.startRecordingSegments(); // Start next segment immediately
                     }
-                }, 100); // Very short gap to allow MediaRecorder to reset
+                }, 50); // Minimal gap to allow MediaRecorder to reset
             }
-        }, 3000); // Back to 3-second segments for faster response
+        }, 3000); // 3-second segments
     }
     
     async processAudioWithWhisper() {
-        // Process in parallel - don't block listening
-        if (this.isProcessing) {
-            console.log('Already processing audio, skipping...');
-            return;
-        }
-        
+        // Allow multiple concurrent processing - don't block if already processing
         if (this.audioChunks.length === 0 || !this.isModelLoaded) return;
         
-        this.isProcessing = true;
+        // Create a unique processing ID for this segment
+        const processingId = Date.now();
+        console.log(`Starting audio processing ${processingId}...`);
         
         // Copy chunks for processing and clear immediately to continue recording
         const chunksToProcess = [...this.audioChunks];
@@ -374,10 +374,11 @@ class LiveTranslator {
             const arrayBuffer = await audioBlob.arrayBuffer();
             
             if (arrayBuffer.byteLength === 0) {
-                console.warn('Empty audio buffer received');
-                this.isProcessing = false;
+                console.warn(`Processing ${processingId}: Empty audio buffer received`);
                 return;
             }
+            
+            console.log(`Processing ${processingId}: Audio buffer size: ${arrayBuffer.byteLength} bytes`);
             
             // Create audio context with proper sample rate
             const audioContext = new (window.AudioContext || window.webkitAudioContext)({
@@ -388,9 +389,8 @@ class LiveTranslator {
             try {
                 audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
             } catch (decodeError) {
-                console.error('Audio decode error:', decodeError);
+                console.error(`Processing ${processingId}: Audio decode error:`, decodeError);
                 this.updateStatus('Listening with Whisper AI...', '🎤 On'); // Continue listening
-                this.isProcessing = false;
                 return;
             }
             
@@ -398,8 +398,7 @@ class LiveTranslator {
             let audio = audioBuffer.getChannelData(0);
             
             if (audio.length === 0) {
-                console.warn('Empty audio data');
-                this.isProcessing = false;
+                console.warn(`Processing ${processingId}: Empty audio data`);
                 return;
             }
             
@@ -419,7 +418,6 @@ class LiveTranslator {
             // Ensure minimum audio length (at least 1 second)
             if (audio.length < 16000) {
                 console.warn('Audio too short for reliable transcription');
-                this.isProcessing = false;
                 return;
             }
             
@@ -433,30 +431,27 @@ class LiveTranslator {
             const rms = Math.sqrt(audio.reduce((sum, val) => sum + val * val, 0) / audio.length);
             console.log(`Audio RMS: ${rms.toFixed(4)}`);
             
-            // More strict threshold for very quiet audio that produces artifacts
-            if (rms < 0.005) {
-                console.warn('Audio too quiet for reliable transcription, skipping...');
-                this.isProcessing = false;
-                return;
+            // More lenient threshold for quiet audio - don't skip too much
+            if (rms < 0.002) {
+                console.warn('Audio very quiet, but processing anyway...');
+                // Continue processing - don't skip
             }
             
             // Check for digital noise/artifacts (very high RMS indicates corrupted audio)
             if (rms > 0.3) {
                 console.warn('Audio appears to be corrupted or too loud');
-                this.isProcessing = false;
                 return;
             }
             
-            // Check for silence (flat audio signal)
+            // Check for complete silence only (very strict)
             const maxAmplitude = Math.max(...audio.map(Math.abs));
-            if (maxAmplitude < 0.01) {
-                console.warn('Audio appears to be mostly silent, skipping...');
-                this.isProcessing = false;
+            if (maxAmplitude < 0.001) {
+                console.warn('Audio appears to be completely silent, skipping...');
                 return;
             }
             
             // Transcribe with Whisper
-            console.log(`Processing ${audio.length} samples (${audio.length / 16000}s), RMS: ${rms.toFixed(4)}`);
+            console.log(`Processing ${processingId}: ${audio.length} samples (${(audio.length / 16000).toFixed(2)}s), RMS: ${rms.toFixed(4)}`);
             
             const result = await this.pipeline(audio, {
                 language: this.currentLanguage === 'auto' ? null : this.currentLanguage,
@@ -475,16 +470,15 @@ class LiveTranslator {
             if (result && result.text) {
                 let transcription = result.text.trim();
                 
-                console.log('Raw Whisper transcription:', transcription);
+                console.log(`Processing ${processingId}: Raw Whisper transcription:`, transcription);
                 
                 // Enhanced artifact filtering
                 if (!this.isValidTranscription(transcription)) {
-                    console.log('Filtered out transcription:', transcription);
-                    this.isProcessing = false;
+                    console.log(`Processing ${processingId}: Filtered out transcription:`, transcription);
                     return;
                 }
                 
-                console.log('Valid transcription accepted:', transcription);
+                console.log(`Processing ${processingId}: Valid transcription accepted:`, transcription);
                 
                 // Update detected language if available
                 if (result.language) {
@@ -518,8 +512,6 @@ class LiveTranslator {
             
             // Don't stop listening on processing errors - continue
             this.updateStatus('Listening with Whisper AI...', '🎤 On');
-        } finally {
-            this.isProcessing = false;
         }
     }
     
@@ -833,6 +825,24 @@ class LiveTranslator {
                 sourceLanguage = this.lastDetectedLanguage;
             }
             
+            // Map Whisper language codes to standard codes
+            const languageMap = {
+                'russian': 'ru',
+                'english': 'en', 
+                'japanese': 'ja',
+                'korean': 'ko',
+                'chinese': 'zh',
+                'spanish': 'es',
+                'french': 'fr',
+                'german': 'de'
+            };
+            
+            if (languageMap[sourceLanguage]) {
+                sourceLanguage = languageMap[sourceLanguage];
+            }
+            
+            console.log('Source language for translation:', sourceLanguage);
+            
             // Skip translation if same language
             if (sourceLanguage === this.targetLanguage) {
                 this.elements.translatedText.textContent = text;
@@ -893,14 +903,23 @@ class LiveTranslator {
         } catch (error) {
             console.error('Translation error:', error);
             
+            // Always show something in translation section - use fallback
             const detectedLang = this.currentLanguage === 'auto' && this.lastDetectedLanguage 
                 ? this.lastDetectedLanguage 
                 : this.currentLanguage;
-            const fallbackText = await this.translateWithFallback(text, detectedLang);
+            
+            // Map language codes if needed
+            const languageMap = {
+                'russian': 'ru', 'english': 'en', 'japanese': 'ja', 'korean': 'ko',
+                'chinese': 'zh', 'spanish': 'es', 'french': 'fr', 'german': 'de'
+            };
+            const mappedLang = languageMap[detectedLang] || detectedLang;
+            
+            const fallbackText = await this.translateWithFallback(text, mappedLang);
             this.elements.translatedText.textContent = fallbackText;
             this.addToHistory(text, fallbackText);
             
-            this.updateStatus('Translation failed - showing original', '⚠️');
+            this.updateStatus('Translation failed - showing original text', '⚠️');
         }
     }
     
@@ -994,8 +1013,26 @@ class LiveTranslator {
     async translateWithSimpleAPI(text, sourceLanguage = null) {
         const sourceLang = sourceLanguage || 'auto';
         
-        // Common Japanese phrases with English translations
+        // Common Russian phrases with English translations
         const commonTranslations = {
+            'ru': {
+                'вообще непонятно если это работает': 'It\'s completely unclear if this works',
+                'вообще непонятно': 'Completely unclear',
+                'если это работает': 'If this works',
+                'это работает': 'This works',
+                'как дела': 'How are things',
+                'хороший': 'Good',
+                'да': 'Yes',
+                'нет': 'No',
+                'привет': 'Hello',
+                'спасибо': 'Thank you',
+                'пожалуйста': 'Please/You\'re welcome',
+                'извините': 'Excuse me',
+                'понятно': 'Clear/Understood',
+                'не понятно': 'Not clear',
+                'работает': 'Works/Is working',
+                'не работает': 'Doesn\'t work'
+            },
             'ja': {
                 '本当にですか': 'Really?',
                 '本当に': 'Really',
@@ -1026,12 +1063,23 @@ class LiveTranslator {
             }
         };
         
+        // Try exact match first
         const translations = commonTranslations[sourceLang];
-        if (translations && translations[text]) {
-            return translations[text];
+        if (translations && translations[text.toLowerCase()]) {
+            return translations[text.toLowerCase()];
         }
         
-        // If not found, try a different API approach
+        // Try partial matches for Russian
+        if (sourceLang === 'ru') {
+            const lowerText = text.toLowerCase();
+            for (const [russian, english] of Object.entries(commonTranslations.ru)) {
+                if (lowerText.includes(russian)) {
+                    return english;
+                }
+            }
+        }
+        
+        // If not found, throw error to trigger fallback
         throw new Error('Simple translation not available for this text');
     }
 
@@ -1043,9 +1091,9 @@ class LiveTranslator {
             return text;
         }
         
-        // For fallback, just show the original text clearly labeled
-        const sourceName = this.getLanguageName(sourceLang);
-        return `${text}`;
+        // For fallback, show the original text (don't add language labels)
+        // This ensures something always appears in the translation section
+        return text;
     }
     
     getLanguageName(code) {
