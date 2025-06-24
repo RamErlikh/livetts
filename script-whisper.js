@@ -288,7 +288,18 @@ class LiveTranslator {
             
             this.mediaRecorder.onstop = () => {
                 if (this.audioChunks.length > 0) {
+                    // Process current chunks
                     this.processAudioWithWhisper();
+                    
+                    // Immediately start next recording cycle if still listening
+                    if (this.isListening) {
+                        setTimeout(() => {
+                            if (this.isListening) {
+                                this.audioChunks = []; // Clear for next cycle
+                                this.startRecordingSegments();
+                            }
+                        }, 50); // Very short delay for immediate restart
+                    }
                 }
             };
             
@@ -298,7 +309,7 @@ class LiveTranslator {
                 this.startWebSpeechListening();
             };
             
-            // Start recording in segments
+            // Start the continuous recording cycle
             this.startRecordingSegments();
             
         } catch (error) {
@@ -335,18 +346,9 @@ class LiveTranslator {
             if (this.isListening && this.mediaRecorder.state === 'recording') {
                 console.log('Stopped recording segment for processing...');
                 this.mediaRecorder.stop();
-                
-                // Start next segment immediately after stopping current one
-                if (this.isListening) {
-                    setTimeout(() => {
-                        if (this.isListening) {
-                            this.audioChunks = []; // Clear previous chunks
-                            this.startRecordingSegments(); // Start next segment immediately
-                        }
-                    }, 100); // Very short gap - just enough for processing handoff
-                }
+                // The onstop handler will restart the cycle
             }
-        }, 2500); // Slightly shorter segments for more responsive transcription
+        }, 2000); // 2-second segments for faster response
     }
     
     async processAudioWithWhisper() {
@@ -361,9 +363,6 @@ class LiveTranslator {
             const audioBlob = new Blob(this.audioChunks, { 
                 type: this.mediaRecorder.mimeType || 'audio/webm' 
             });
-            
-            // Clear chunks after processing
-            this.audioChunks = [];
             
             // Convert blob to audio buffer with proper error handling
             const arrayBuffer = await audioBlob.arrayBuffer();
@@ -411,8 +410,8 @@ class LiveTranslator {
                 audio = resampledAudio;
             }
             
-            // Ensure minimum audio length (at least 1 second)
-            if (audio.length < 16000) {
+            // Reduce minimum audio length requirement
+            if (audio.length < 8000) { // 0.5 seconds instead of 1 second
                 console.warn('Audio too short for reliable transcription');
                 this.isProcessing = false;
                 return;
@@ -424,40 +423,10 @@ class LiveTranslator {
                 audio = audio.slice(0, maxLength);
             }
             
-            // Enhanced audio quality checks
+            // More lenient audio quality checks
             const rms = Math.sqrt(audio.reduce((sum, val) => sum + val * val, 0) / audio.length);
-            if (rms < 0.001) {
+            if (rms < 0.0001) { // Much lower threshold
                 console.warn('Audio appears to be silent');
-                this.isProcessing = false;
-                return;
-            }
-            
-            // Check for digital noise/artifacts (very high RMS indicates corrupted audio)
-            if (rms > 0.5) {
-                console.warn('Audio appears to be corrupted or too loud');
-                this.isProcessing = false;
-                return;
-            }
-            
-            // Check for consistent patterns that indicate digital artifacts
-            const segments = 10;
-            const segmentLength = Math.floor(audio.length / segments);
-            const segmentRMS = [];
-            
-            for (let i = 0; i < segments; i++) {
-                const start = i * segmentLength;
-                const end = Math.min(start + segmentLength, audio.length);
-                const segmentData = audio.slice(start, end);
-                const segmentRmsValue = Math.sqrt(segmentData.reduce((sum, val) => sum + val * val, 0) / segmentData.length);
-                segmentRMS.push(segmentRmsValue);
-            }
-            
-            // Check if all segments have very similar RMS (indicates digital noise)
-            const avgRMS = segmentRMS.reduce((sum, rms) => sum + rms, 0) / segmentRMS.length;
-            const variance = segmentRMS.reduce((sum, rms) => sum + Math.pow(rms - avgRMS, 2), 0) / segmentRMS.length;
-            
-            if (variance < 0.0001 && avgRMS > 0.01) {
-                console.warn('Audio appears to contain digital artifacts - skipping');
                 this.isProcessing = false;
                 return;
             }
@@ -471,41 +440,39 @@ class LiveTranslator {
                 return_timestamps: false,
                 chunk_length_s: 30,
                 stride_length_s: 5,
-                temperature: 0.0, // Use deterministic decoding
-                condition_on_previous_text: false, // Prevent random outputs
-                no_timestamps: true, // Disable timestamps to reduce artifacts
+                temperature: 0.0,
+                condition_on_previous_text: false,
+                no_timestamps: true,
             });
             
-            // Handle the result with enhanced validation
+            // Handle the result with MUCH less aggressive validation
             if (result && result.text) {
                 let transcription = result.text.trim();
                 
                 console.log('Raw transcription:', transcription);
                 
-                // Enhanced artifact filtering
-                if (!this.isValidTranscription(transcription)) {
-                    console.log('Filtered out invalid transcription:', transcription);
-                    this.isProcessing = false;
-                    return;
-                }
-                
-                // Update detected language if available
-                if (result.language) {
-                    this.lastDetectedLanguage = result.language;
-                    console.log(`Whisper detected language: ${result.language}`);
-                }
-                
-                // Display transcription
-                this.elements.originalText.textContent = transcription;
-                
-                // Translate if needed
-                if (this.targetLanguage !== this.currentLanguage && this.targetLanguage !== 'auto') {
-                    this.translateText(transcription);
+                // Only filter the most obvious artifacts
+                if (transcription.length > 0 && this.isValidTranscription(transcription)) {
+                    // Update detected language if available
+                    if (result.language) {
+                        this.lastDetectedLanguage = result.language;
+                        console.log(`Whisper detected language: ${result.language}`);
+                    }
+                    
+                    // Display transcription
+                    this.elements.originalText.textContent = transcription;
+                    
+                    // Translate if needed
+                    if (this.targetLanguage !== this.currentLanguage && this.targetLanguage !== 'auto') {
+                        this.translateText(transcription);
+                    } else {
+                        this.elements.translatedText.textContent = transcription;
+                    }
+                    
+                    console.log('Valid transcription:', transcription);
                 } else {
-                    this.elements.translatedText.textContent = transcription;
+                    console.log('Filtered transcription (likely artifact):', transcription);
                 }
-                
-                console.log('Valid transcription:', transcription);
             }
             
             this.updateStatus('Listening with Whisper AI...', '🎤 On');
@@ -520,81 +487,55 @@ class LiveTranslator {
             }, 2000);
         } finally {
             this.isProcessing = false;
+            // Don't clear chunks here - let the recording cycle handle it
         }
     }
     
-    // Enhanced transcription validation
+    // Enhanced transcription validation - LESS AGGRESSIVE
     isValidTranscription(text) {
-        if (!text || text.length < 2) return false;
+        if (!text || text.length < 1) return false;
         
-        // Common Whisper artifacts and patterns to filter out
-        const artifacts = [
-            '[Music]', '[Applause]', '[Noise]', '[Background music]', 
-            'you', 'Thank you.', 'Thanks for watching!', 'Bye.', 'Goodbye.',
-            'Hello.', 'Hi.', 'Hey.', 'Okay.', 'OK.', 'Hmm.', 'Um.', 'Uh.',
-            'So.', 'Well.', 'Now.', 'Here.', 'There.', 'This.'
+        // Only filter the most obvious artifacts
+        const obviousArtifacts = [
+            '[Music]', '[Applause]', '[Noise]', '[Background music]'
         ];
         
-        // Check for exact matches with common artifacts
-        if (artifacts.some(artifact => text.toLowerCase() === artifact.toLowerCase())) {
+        // Check for exact matches with obvious artifacts only
+        if (obviousArtifacts.some(artifact => text.toLowerCase() === artifact.toLowerCase())) {
             return false;
         }
         
-        // Check for repetitive single characters or short patterns
-        const repetitivePatterns = [
-            /^(.)\1{4,}$/, // Single character repeated 5+ times (e.g., "aaaaa")
-            /^(.{1,3})\1{3,}$/, // Short pattern repeated 4+ times (e.g., "abcabcabc")
-            /^\[(.)\]\s*\[(.)\]/, // Bracketed single characters (e.g., "[S] [S]")
-            /^["'](.)\1{4,}["']$/, // Quoted repetitive characters
-            /^(.)\s+\1\s+\1\s+\1/, // Spaced repetitive characters (e.g., "S S S S")
-            /^\w\s\w\s\w\s\w/, // Single letter with spaces pattern
+        // Only check for very repetitive patterns (more than 8 repetitions)
+        const veryRepetitivePatterns = [
+            /^(.)\1{8,}$/, // Single character repeated 9+ times
+            /^\[(.)\]\s*\[(.)\]\s*\[(.)\]\s*\[(.)\]/, // Multiple bracketed characters
+            /^(.)\s+\1\s+\1\s+\1\s+\1\s+\1/, // Spaced repetitive characters 6+ times
         ];
         
-        if (repetitivePatterns.some(pattern => pattern.test(text))) {
+        if (veryRepetitivePatterns.some(pattern => pattern.test(text))) {
             return false;
         }
         
-        // Check for excessive repetition of any character
+        // Check for extreme character repetition (80% or more of same character)
         const charCounts = {};
         let totalChars = 0;
         
         for (const char of text.toLowerCase()) {
-            if (char.match(/[a-z]/)) {
+            if (char.match(/[a-zа-яё]/)) { // Include Cyrillic for Russian
                 charCounts[char] = (charCounts[char] || 0) + 1;
                 totalChars++;
             }
         }
         
-        // If any single character makes up more than 60% of the text, it's likely an artifact
+        // Only reject if ANY single character makes up more than 80% of text
         for (const [char, count] of Object.entries(charCounts)) {
-            if (count / totalChars > 0.6) {
+            if (count / totalChars > 0.8) {
                 return false;
             }
         }
         
-        // Check for patterns that look like encoding artifacts
-        if (text.includes('') || text.includes('\ufffd')) {
-            return false;
-        }
-        
-        // Must contain at least one vowel (for real speech)
-        if (!/[aeiouAEIOU]/.test(text)) {
-            return false;
-        }
-        
-        // Too many consecutive identical words
-        const words = text.split(/\s+/);
-        let consecutiveCount = 1;
-        for (let i = 1; i < words.length; i++) {
-            if (words[i].toLowerCase() === words[i-1].toLowerCase()) {
-                consecutiveCount++;
-                if (consecutiveCount >= 4) {
-                    return false;
-                }
-            } else {
-                consecutiveCount = 1;
-            }
-        }
+        // Remove vowel requirement (not all languages have the same vowels)
+        // Remove consecutive word filtering (too aggressive)
         
         return true;
     }
