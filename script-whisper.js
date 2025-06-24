@@ -708,10 +708,10 @@ class LiveTranslator {
     isValidTranscription(text) {
         if (!text || text.length < 2) return false;
         
-        // Common Whisper artifacts and patterns to filter out
+        // Only filter out very obvious artifacts - be much more permissive
         const artifacts = [
             '[Music]', '[Applause]', '[Noise]', '[Background music]', 
-            'Thank you.', 'Thanks for watching!', 'Bye.', 'Goodbye.',
+            'Thank you.', 'Thanks for watching!',
         ];
         
         // Check for exact matches with common artifacts
@@ -719,75 +719,40 @@ class LiveTranslator {
             return false;
         }
         
-        // Check for repetitive single characters or short patterns
+        // MAIN FILTER: Only block repetitive single characters (SSSSS, CCCCC, KKKKK, etc.)
+        // Check for repetitive single characters or very short patterns
         const repetitivePatterns = [
-            /^(.)\1{4,}$/, // Single character repeated 5+ times (e.g., "aaaaa")
-            /^(.{1,3})\1{3,}$/, // Short pattern repeated 4+ times (e.g., "abcabcabc")
+            /^(.)\1{4,}$/, // Single character repeated 5+ times (e.g., "SSSSS", "CCCCC")
             /^\[(.)\]\s*\[(.)\]/, // Bracketed single characters (e.g., "[S] [S]")
-            /^["'](.)\1{4,}["']$/, // Quoted repetitive characters
             /^(.)\s+\1\s+\1\s+\1/, // Spaced repetitive characters (e.g., "S S S S")
-            /^\w\s\w\s\w\s\w/, // Single letter with spaces pattern
         ];
         
         if (repetitivePatterns.some(pattern => pattern.test(text))) {
             return false;
         }
         
-        // Check for excessive repetition of any character
+        // Check for excessive repetition of any single character (the main issue you want fixed)
         const charCounts = {};
         let totalChars = 0;
         
         for (const char of text.toLowerCase()) {
-            if (char.match(/\w/)) { // Changed from [a-z] to \w to support international characters
+            if (char.match(/\w/)) { // Any word character (includes international)
                 charCounts[char] = (charCounts[char] || 0) + 1;
                 totalChars++;
             }
         }
         
-        // If any single character makes up more than 70% of the text, it's likely an artifact
+        // Only filter if a single character makes up more than 80% of the text (very permissive)
         for (const [char, count] of Object.entries(charCounts)) {
-            if (count / totalChars > 0.7) { // Increased from 60% to 70%
+            if (count / totalChars > 0.8) { // Very high threshold - only blocks obvious artifacts
                 return false;
             }
         }
         
-        // Check for patterns that look like encoding artifacts
-        if (text.includes('') || text.includes('\ufffd')) {
-            return false;
-        }
+        // Remove the vowel check entirely - it was causing issues with international text
+        // All real speech should pass at this point
         
-        // Modified vowel check to support international characters
-        // Check for vowels in Latin script OR if text contains non-Latin characters (like Cyrillic, Chinese, etc.)
-        const hasLatinVowels = /[aeiouAEIOU]/.test(text);
-        const hasNonLatinChars = /[^\x00-\x7F]/.test(text); // Non-ASCII characters
-        
-        if (!hasLatinVowels && !hasNonLatinChars) {
-            return false;
-        }
-        
-        // Too many consecutive identical words
-        const words = text.split(/\s+/);
-        let consecutiveCount = 1;
-        for (let i = 1; i < words.length; i++) {
-            if (words[i].toLowerCase() === words[i-1].toLowerCase()) {
-                consecutiveCount++;
-                if (consecutiveCount >= 4) {
-                    return false;
-                }
-            } else {
-                consecutiveCount = 1;
-            }
-        }
-        
-        // Additional check for very short single words that are likely artifacts
-        if (words.length === 1 && text.length <= 3 && /^[a-zA-Z]+$/.test(text)) {
-            const shortArtifacts = ['you', 'the', 'and', 'but', 'yes', 'no', 'ok', 'so', 'um', 'uh', 'ah'];
-            if (shortArtifacts.includes(text.toLowerCase())) {
-                return false;
-            }
-        }
-        
-        return true;
+        return true; // Accept everything else
     }
     
     stopListening() {
@@ -1417,11 +1382,22 @@ class LiveTranslator {
         console.log('Text:', text);
         console.log('Length:', text.length);
         
-        // Check vowels
-        const hasLatinVowels = /[aeiouAEIOU]/.test(text);
-        const hasNonLatinChars = /[^\x00-\x7F]/.test(text);
-        console.log('Has Latin vowels:', hasLatinVowels);
-        console.log('Has non-Latin chars:', hasNonLatinChars);
+        // Check for common artifacts
+        const artifacts = [
+            '[Music]', '[Applause]', '[Noise]', '[Background music]', 
+            'Thank you.', 'Thanks for watching!',
+        ];
+        const isArtifact = artifacts.some(artifact => text.toLowerCase() === artifact.toLowerCase());
+        console.log('Is common artifact:', isArtifact);
+        
+        // Check repetitive patterns
+        const repetitivePatterns = [
+            /^(.)\1{4,}$/, // Single character repeated 5+ times
+            /^\[(.)\]\s*\[(.)\]/, // Bracketed single characters
+            /^(.)\s+\1\s+\1\s+\1/, // Spaced repetitive characters
+        ];
+        const hasRepetitivePattern = repetitivePatterns.some(pattern => pattern.test(text));
+        console.log('Has repetitive pattern (SSSSS, CCCCC, etc.):', hasRepetitivePattern);
         
         // Check character distribution
         const charCounts = {};
@@ -1435,17 +1411,12 @@ class LiveTranslator {
         
         if (totalChars > 0) {
             const maxCharPercentage = Math.max(...Object.values(charCounts)) / totalChars;
-            console.log('Max character percentage:', (maxCharPercentage * 100).toFixed(1) + '%');
+            console.log('Max single character percentage:', (maxCharPercentage * 100).toFixed(1) + '%');
+            console.log('Threshold for filtering:', '80%');
+            console.log('Would be filtered for character repetition:', maxCharPercentage > 0.8);
         }
         
-        // Check for artifacts
-        const artifacts = [
-            '[Music]', '[Applause]', '[Noise]', '[Background music]', 
-            'Thank you.', 'Thanks for watching!', 'Bye.', 'Goodbye.',
-        ];
-        const isArtifact = artifacts.some(artifact => text.toLowerCase() === artifact.toLowerCase());
-        console.log('Is common artifact:', isArtifact);
-        
+        console.log('✅ New validation is much more permissive - only blocks obvious artifacts!');
         console.groupEnd();
     }
 }
