@@ -867,6 +867,9 @@ class LiveTranslator {
                 this.elements.translatedText.textContent = text;
                 this.addToHistory(text, text);
                 this.updateStatus('Same language - no translation needed', '✅');
+                if (this.elements.autoSpeak.checked) {
+                    this.speakText(text);
+                }
                 return;
             }
             
@@ -880,45 +883,41 @@ class LiveTranslator {
                     serviceUsed = 'Fallback';
                 }
             } else {
-                // Try free services with better error handling
-                const services = [
-                    { 
-                        fn: () => this.translateWithMyMemory(text, sourceLanguage), 
-                        name: 'MyMemory',
-                        corsOptimized: true
+                // Try MyMemory with better language support
+                try {
+                    const result = await this.translateWithMyMemory(text, sourceLanguage);
+                    if (result && result.trim() && 
+                        !result.includes('[Translation failed]') && 
+                        result.toLowerCase() !== text.toLowerCase()) {
+                        translatedText = result;
+                        serviceUsed = 'MyMemory';
+                    } else {
+                        throw new Error('No valid translation from MyMemory');
                     }
-                ];
-                
-                let success = false;
-                
-                for (const service of services) {
+                } catch (error) {
+                    console.warn('MyMemory failed:', error.message);
+                    // Use simple translation service for common languages
                     try {
-                        const result = await service.fn();
-                        if (result && result.trim() && 
-                            !result.includes('[Translation failed]') && 
-                            result.toLowerCase() !== text.toLowerCase()) {
-                            translatedText = result;
-                            serviceUsed = service.name;
-                            success = true;
-                            break;
-                        }
-                    } catch (error) {
-                        console.warn(`${service.name} failed:`, error.message);
-                        continue;
+                        translatedText = await this.translateWithSimpleAPI(text, sourceLanguage);
+                        serviceUsed = 'Simple Translation';
+                    } catch (simpleError) {
+                        console.warn('Simple translation failed:', simpleError.message);
+                        translatedText = await this.translateWithFallback(text, sourceLanguage);
+                        serviceUsed = 'Fallback Display';
                     }
-                }
-                
-                if (!success) {
-                    translatedText = await this.translateWithFallback(text, sourceLanguage);
-                    serviceUsed = 'Fallback Display';
                 }
             }
             
+            // Display translation
             this.elements.translatedText.textContent = translatedText;
             this.addToHistory(text, translatedText);
             
-            if (this.elements.autoSpeak.checked && !translatedText.includes('[Translation failed]') && !translatedText.includes('[Original:')) {
-                this.speakText(translatedText);
+            // Speak only the translated text (not the language indicator)
+            if (this.elements.autoSpeak.checked && serviceUsed !== 'Fallback Display') {
+                const textToSpeak = translatedText.includes('[') && translatedText.includes(']') 
+                    ? text // If it's a fallback with brackets, speak original
+                    : translatedText; // Otherwise speak the translation
+                this.speakText(textToSpeak);
             }
             
             // Show which service was used
@@ -970,14 +969,31 @@ class LiveTranslator {
     }
     
     async translateWithMyMemory(text, sourceLanguage = null) {
-        const sourceLang = sourceLanguage || (this.currentLanguage === 'auto' ? 'en' : this.currentLanguage);
-        const limitedText = text.length > 500 ? text.substring(0, 500) + '...' : text;
+        // Map language codes to MyMemory format
+        const langMap = {
+            'ja': 'ja',
+            'ko': 'ko', 
+            'zh': 'zh',
+            'en': 'en',
+            'es': 'es',
+            'fr': 'fr',
+            'de': 'de',
+            'it': 'it',
+            'pt': 'pt',
+            'ru': 'ru',
+            'ar': 'ar',
+            'hi': 'hi'
+        };
+        
+        const sourceLang = langMap[sourceLanguage] || (sourceLanguage || 'en');
+        const targetLang = langMap[this.targetLanguage] || this.targetLanguage;
+        const limitedText = text.length > 200 ? text.substring(0, 200) + '...' : text;
         
         // Use GET request to avoid CORS preflight issues
         const params = new URLSearchParams({
             q: limitedText,
-            langpair: `${sourceLang}|${this.targetLanguage}`,
-            de: 'a@b.c', // Required parameter for some reason
+            langpair: `${sourceLang}|${targetLang}`,
+            de: 'translator@example.com', // Required email format
             mt: '1'
         });
         
@@ -987,6 +1003,7 @@ class LiveTranslator {
             method: 'GET',
             headers: {
                 'Accept': 'application/json',
+                'User-Agent': 'LiveTTSTranslator/1.0'
             }
         });
         
@@ -995,18 +1012,70 @@ class LiveTranslator {
         }
         
         const data = await response.json();
+        console.log('MyMemory response:', data);
         
         if (data.responseStatus === 200 && data.responseData?.translatedText) {
-            const translation = data.responseData.translatedText;
+            let translation = data.responseData.translatedText;
+            
+            // Clean up the translation
+            translation = translation.replace(/MYMEMORY WARNING:.*$/gi, '').trim();
+            translation = translation.replace(/\s*\[.*?\]\s*$/g, '').trim();
+            
             // Check if translation is valid (not just the same text)
-            if (translation.toLowerCase() !== limitedText.toLowerCase() && 
-                !translation.includes('TRANSLATED BY GOOGLE') &&
-                !translation.includes('MYMEMORY WARNING')) {
+            if (translation && 
+                translation.toLowerCase() !== limitedText.toLowerCase() && 
+                !translation.includes('TRANSLATED BY') &&
+                translation.length > 0) {
                 return translation;
             }
         }
         
-        throw new Error('MyMemory: No valid translation');
+        throw new Error('MyMemory: No valid translation found');
+    }
+
+    // Simple translation for common phrases
+    async translateWithSimpleAPI(text, sourceLanguage = null) {
+        const sourceLang = sourceLanguage || 'auto';
+        
+        // Common Japanese phrases with English translations
+        const commonTranslations = {
+            'ja': {
+                '本当にですか': 'Really?',
+                '本当に': 'Really',
+                'ですか': 'Is it?',
+                'はい': 'Yes',
+                'いいえ': 'No',
+                'こんにちは': 'Hello',
+                'ありがとう': 'Thank you',
+                'ありがとうございます': 'Thank you very much',
+                'すみません': 'Excuse me',
+                'おはよう': 'Good morning',
+                'こんばんは': 'Good evening',
+                'さようなら': 'Goodbye',
+                'お疲れ様': 'Good job',
+                'がんばって': 'Good luck',
+                'どうですか': 'How is it?',
+                'そうですね': 'I agree',
+                'わかりました': 'I understand',
+                'わからない': 'I don\'t understand'
+            },
+            'ko': {
+                '안녕하세요': 'Hello',
+                '감사합니다': 'Thank you',
+                '네': 'Yes',
+                '아니요': 'No',
+                '죄송합니다': 'Sorry',
+                '잘 부탁드립니다': 'Please take care of me'
+            }
+        };
+        
+        const translations = commonTranslations[sourceLang];
+        if (translations && translations[text]) {
+            return translations[text];
+        }
+        
+        // If not found, try a different API approach
+        throw new Error('Simple translation not available for this text');
     }
 
     async translateWithFallback(text, sourceLanguage = null) {
@@ -1017,11 +1086,9 @@ class LiveTranslator {
             return text;
         }
         
-        // Create a simple language indicator
+        // For fallback, just show the original text clearly labeled
         const sourceName = this.getLanguageName(sourceLang);
-        const targetName = this.getLanguageName(this.targetLanguage);
-        
-        return `[${sourceName} → ${targetName}] ${text}`;
+        return `${text}`;
     }
     
     getLanguageName(code) {
