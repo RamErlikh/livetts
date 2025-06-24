@@ -1020,7 +1020,7 @@ class LiveTranslator {
             'fr': 'fr-FR',
             'de': 'de-DE',
             'it': 'it-IT',
-            'pt': 'pt-BR',
+            'pt': 'pt-PT',
             'ru': 'ru-RU',
             'ja': 'ja-JP',
             'ko': 'ko-KR',
@@ -1029,25 +1029,48 @@ class LiveTranslator {
             'hi': 'hi-IN'
         };
         
-        return languageMap[language] || language;
+        return languageMap[language] || 'en-US';
     }
 }
 
-// Initialize the translator when the page loads
+// Initialize the application when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-    const translator = new LiveTranslator();
-    console.log('Live Translator with Whisper AI initialized for streaming.');
+    try {
+        console.log('Initializing Live TTS Translator...');
+        window.translator = new LiveTranslator();
+        console.log('Live TTS Translator initialized successfully');
+    } catch (error) {
+        console.error('Failed to initialize Live TTS Translator:', error);
+        
+        // Show error message to user
+        const statusElement = document.getElementById('statusText');
+        if (statusElement) {
+            statusElement.textContent = 'Initialization failed - please refresh page';
+        }
+        
+        // Try to show error in overlay if available
+        if (typeof showError === 'function') {
+            showError('Failed to initialize application: ' + error.message);
+        }
+    }
 });
 
-// Service Worker registration for PWA capabilities
-if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js')
-            .then(registration => {
-                console.log('SW registered: ', registration);
-            })
-            .catch(registrationError => {
-                console.log('SW registration failed: ', registrationError);
-            });
-    });
-} 
+// Handle page visibility changes to restart listening if needed
+document.addEventListener('visibilitychange', () => {
+    if (window.translator && !document.hidden && window.translator.isListening) {
+        // Restart listening if page becomes visible and was previously listening
+        setTimeout(() => {
+            if (window.translator && window.translator.isListening) {
+                console.log('Page became visible - ensuring listening is active');
+            }
+        }, 1000);
+    }
+});
+
+// Export for module systems
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = LiveTranslator;
+}
+
+// Also make available globally
+window.LiveTranslator = LiveTranslator; 
