@@ -2,6 +2,8 @@ class LiveTranslator {
     constructor() {
         this.pipeline = null;
         this.mediaRecorder = null;
+        this.mediaRecorder2 = null; // Second recorder for continuous recording
+        this.currentRecorder = 1; // Track which recorder is active
         this.audioStream = null;
         this.isListening = false;
         this.currentLanguage = 'auto';
@@ -9,6 +11,7 @@ class LiveTranslator {
         this.apiKey = localStorage.getItem('googleTranslateApiKey') || '';
         this.history = JSON.parse(localStorage.getItem('translationHistory') || '[]');
         this.audioChunks = [];
+        this.audioChunks2 = []; // Second set of chunks
         this.isProcessing = false;
         this.lastDetectedLanguage = null;
         this.isModelLoaded = false;
@@ -260,8 +263,9 @@ class LiveTranslator {
             
             // Clear previous audio chunks
             this.audioChunks = [];
+            this.audioChunks2 = [];
             
-            // Setup MediaRecorder with proper error handling
+            // Setup dual MediaRecorders for continuous recording
             const options = {
                 mimeType: 'audio/webm;codecs=opus',
                 audioBitsPerSecond: 16000
@@ -278,26 +282,42 @@ class LiveTranslator {
                 }
             }
             
+            // Create first recorder
             this.mediaRecorder = new MediaRecorder(this.audioStream, options);
-            
             this.mediaRecorder.ondataavailable = (event) => {
                 if (event.data.size > 0) {
                     this.audioChunks.push(event.data);
-                    console.log(`Audio chunk received: ${event.data.size} bytes`);
+                }
+            };
+            this.mediaRecorder.onstop = () => {
+                if (this.audioChunks.length > 0) {
+                    this.processAudioWithWhisper(this.audioChunks, 1);
+                    this.audioChunks = []; // Clear after processing
                 }
             };
             
-            this.mediaRecorder.onstop = () => {
-                console.log('MediaRecorder stopped, processing audio...');
-                if (this.audioChunks.length > 0) {
-                    // Process audio in parallel - don't wait for it to complete
-                    this.processAudioWithWhisper();
+            // Create second recorder
+            this.mediaRecorder2 = new MediaRecorder(this.audioStream, options);
+            this.mediaRecorder2.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    this.audioChunks2.push(event.data);
                 }
-                // Note: Next recording segment is already started from startRecordingSegments()
+            };
+            this.mediaRecorder2.onstop = () => {
+                if (this.audioChunks2.length > 0) {
+                    this.processAudioWithWhisper(this.audioChunks2, 2);
+                    this.audioChunks2 = []; // Clear after processing
+                }
             };
             
             this.mediaRecorder.onerror = (error) => {
-                console.error('MediaRecorder error:', error);
+                console.error('MediaRecorder 1 error:', error);
+                this.updateStatus('Recording error - switching to Web Speech API', '⚠️');
+                this.startWebSpeechListening();
+            };
+            
+            this.mediaRecorder2.onerror = (error) => {
+                console.error('MediaRecorder 2 error:', error);
                 this.updateStatus('Recording error - switching to Web Speech API', '⚠️');
                 this.startWebSpeechListening();
             };
@@ -331,42 +351,72 @@ class LiveTranslator {
             clearTimeout(this.recordingInterval);
         }
         
-        // Use 3-second segments for faster response
+        // Start with first recorder
+        this.currentRecorder = 1;
         this.mediaRecorder.start();
-        console.log('Started recording segment...');
+        console.log('Started recording segment with recorder 1...');
         
+        // Set up alternating recording pattern
         this.recordingInterval = setTimeout(() => {
-            if (this.isListening && this.mediaRecorder.state === 'recording') {
-                this.mediaRecorder.stop();
-                console.log('Stopped recording segment for processing...');
-                
-                // IMMEDIATELY start next segment - no gap in listening
-                setTimeout(() => {
-                    if (this.isListening) {
-                        this.startRecordingSegments(); // Start next segment immediately
-                    }
-                }, 50); // Minimal gap to allow MediaRecorder to reset
-            }
+            this.alternateRecorders();
         }, 3000); // 3-second segments
     }
     
-    async processAudioWithWhisper() {
-        // Allow multiple concurrent processing - don't block if already processing
-        if (this.audioChunks.length === 0 || !this.isModelLoaded) return;
+    alternateRecorders() {
+        if (!this.isListening) return;
         
-        // Create a unique processing ID for this segment
-        const processingId = Date.now();
-        console.log(`Starting audio processing ${processingId}...`);
+        if (this.currentRecorder === 1) {
+            // Start recorder 2 before stopping recorder 1
+            this.mediaRecorder2.start();
+            console.log('Started recording segment with recorder 2...');
+            
+            // Small delay then stop recorder 1
+            setTimeout(() => {
+                if (this.mediaRecorder.state === 'recording') {
+                    this.mediaRecorder.stop();
+                    console.log('Stopped recorder 1 for processing...');
+                }
+            }, 50);
+            
+            this.currentRecorder = 2;
+        } else {
+            // Start recorder 1 before stopping recorder 2
+            this.mediaRecorder.start();
+            console.log('Started recording segment with recorder 1...');
+            
+            // Small delay then stop recorder 2
+            setTimeout(() => {
+                if (this.mediaRecorder2.state === 'recording') {
+                    this.mediaRecorder2.stop();
+                    console.log('Stopped recorder 2 for processing...');
+                }
+            }, 50);
+            
+            this.currentRecorder = 1;
+        }
         
-        // Copy chunks for processing and clear immediately to continue recording
-        const chunksToProcess = [...this.audioChunks];
-        this.audioChunks = [];
+        // Continue alternating
+        this.recordingInterval = setTimeout(() => {
+            this.alternateRecorders();
+        }, 3000);
+    }
+    
+    async processAudioWithWhisper(chunks, recorder) {
+        // Process in parallel - don't block listening
+        if (this.isProcessing) {
+            console.log('Already processing audio, skipping...');
+            return;
+        }
+        
+        if (chunks.length === 0 || !this.isModelLoaded) return;
+        
+        this.isProcessing = true;
         
         try {
             this.updateStatus('Transcribing with Whisper AI...', '🔄');
             
             // Convert audio chunks to blob
-            const audioBlob = new Blob(chunksToProcess, { 
+            const audioBlob = new Blob(chunks, { 
                 type: this.mediaRecorder.mimeType || 'audio/webm' 
             });
             
@@ -374,11 +424,10 @@ class LiveTranslator {
             const arrayBuffer = await audioBlob.arrayBuffer();
             
             if (arrayBuffer.byteLength === 0) {
-                console.warn(`Processing ${processingId}: Empty audio buffer received`);
+                console.warn('Empty audio buffer received');
+                this.isProcessing = false;
                 return;
             }
-            
-            console.log(`Processing ${processingId}: Audio buffer size: ${arrayBuffer.byteLength} bytes`);
             
             // Create audio context with proper sample rate
             const audioContext = new (window.AudioContext || window.webkitAudioContext)({
@@ -389,8 +438,9 @@ class LiveTranslator {
             try {
                 audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
             } catch (decodeError) {
-                console.error(`Processing ${processingId}: Audio decode error:`, decodeError);
+                console.error('Audio decode error:', decodeError);
                 this.updateStatus('Listening with Whisper AI...', '🎤 On'); // Continue listening
+                this.isProcessing = false;
                 return;
             }
             
@@ -398,7 +448,8 @@ class LiveTranslator {
             let audio = audioBuffer.getChannelData(0);
             
             if (audio.length === 0) {
-                console.warn(`Processing ${processingId}: Empty audio data`);
+                console.warn('Empty audio data');
+                this.isProcessing = false;
                 return;
             }
             
@@ -418,6 +469,7 @@ class LiveTranslator {
             // Ensure minimum audio length (at least 1 second)
             if (audio.length < 16000) {
                 console.warn('Audio too short for reliable transcription');
+                this.isProcessing = false;
                 return;
             }
             
@@ -440,6 +492,7 @@ class LiveTranslator {
             // Check for digital noise/artifacts (very high RMS indicates corrupted audio)
             if (rms > 0.3) {
                 console.warn('Audio appears to be corrupted or too loud');
+                this.isProcessing = false;
                 return;
             }
             
@@ -447,11 +500,12 @@ class LiveTranslator {
             const maxAmplitude = Math.max(...audio.map(Math.abs));
             if (maxAmplitude < 0.001) {
                 console.warn('Audio appears to be completely silent, skipping...');
+                this.isProcessing = false;
                 return;
             }
             
             // Transcribe with Whisper
-            console.log(`Processing ${processingId}: ${audio.length} samples (${(audio.length / 16000).toFixed(2)}s), RMS: ${rms.toFixed(4)}`);
+            console.log(`Processing ${audio.length} samples (${audio.length / 16000}s), RMS: ${rms.toFixed(4)}`);
             
             const result = await this.pipeline(audio, {
                 language: this.currentLanguage === 'auto' ? null : this.currentLanguage,
@@ -470,15 +524,16 @@ class LiveTranslator {
             if (result && result.text) {
                 let transcription = result.text.trim();
                 
-                console.log(`Processing ${processingId}: Raw Whisper transcription:`, transcription);
+                console.log('Raw Whisper transcription:', transcription);
                 
                 // Enhanced artifact filtering
                 if (!this.isValidTranscription(transcription)) {
-                    console.log(`Processing ${processingId}: Filtered out transcription:`, transcription);
+                    console.log('Filtered out transcription:', transcription);
+                    this.isProcessing = false;
                     return;
                 }
                 
-                console.log(`Processing ${processingId}: Valid transcription accepted:`, transcription);
+                console.log('Valid transcription accepted:', transcription);
                 
                 // Update detected language if available
                 if (result.language) {
@@ -486,7 +541,15 @@ class LiveTranslator {
                     console.log(`Whisper detected language: ${result.language}`);
                 }
                 
-                // Display transcription
+                // Display transcription with language info for overlay mode
+                if (document.body.classList.contains('overlay-mode')) {
+                    const detectedLang = this.lastDetectedLanguage || this.currentLanguage;
+                    const langName = this.getLanguageName(detectedLang);
+                    document.querySelector('.text-box:first-child .text-label').textContent = `Original: (${langName})`;
+                } else {
+                    document.querySelector('.text-box:first-child .text-label').textContent = 'ORIGINAL SPEECH';
+                }
+                
                 this.elements.originalText.textContent = transcription;
                 console.log('Transcription displayed in UI');
                 
@@ -512,6 +575,8 @@ class LiveTranslator {
             
             // Don't stop listening on processing errors - continue
             this.updateStatus('Listening with Whisper AI...', '🎤 On');
+        } finally {
+            this.isProcessing = false;
         }
     }
     
@@ -567,12 +632,20 @@ class LiveTranslator {
             this.recordingInterval = null;
         }
         
-        // Stop media recorder
+        // Stop media recorders
         if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
             try {
                 this.mediaRecorder.stop();
             } catch (error) {
-                console.warn('Error stopping media recorder:', error);
+                console.warn('Error stopping media recorder 1:', error);
+            }
+        }
+        
+        if (this.mediaRecorder2 && this.mediaRecorder2.state !== 'inactive') {
+            try {
+                this.mediaRecorder2.stop();
+            } catch (error) {
+                console.warn('Error stopping media recorder 2:', error);
             }
         }
         
@@ -599,6 +672,7 @@ class LiveTranslator {
         
         // Clear any pending audio chunks
         this.audioChunks = [];
+        this.audioChunks2 = [];
         
         // Reset processing flag
         this.isProcessing = false;
@@ -877,6 +951,15 @@ class LiveTranslator {
             
             // Display translation
             this.elements.translatedText.textContent = translatedText;
+            
+            // Update translation label for overlay mode
+            if (document.body.classList.contains('overlay-mode')) {
+                const targetLangName = this.getLanguageName(this.targetLanguage);
+                document.querySelector('.text-box:last-child .text-label').textContent = `Translation: (${targetLangName})`;
+            } else {
+                document.querySelector('.text-box:last-child .text-label').textContent = 'TRANSLATION';
+            }
+            
             this.addToHistory(text, translatedText);
             
             // Speak only the translated text (not the language indicator)
@@ -917,6 +1000,15 @@ class LiveTranslator {
             
             const fallbackText = await this.translateWithFallback(text, mappedLang);
             this.elements.translatedText.textContent = fallbackText;
+            
+            // Update translation label for overlay mode even on error
+            if (document.body.classList.contains('overlay-mode')) {
+                const targetLangName = this.getLanguageName(this.targetLanguage);
+                document.querySelector('.text-box:last-child .text-label').textContent = `Translation: (${targetLangName})`;
+            } else {
+                document.querySelector('.text-box:last-child .text-label').textContent = 'TRANSLATION';
+            }
+            
             this.addToHistory(text, fallbackText);
             
             this.updateStatus('Translation failed - showing original text', '⚠️');
