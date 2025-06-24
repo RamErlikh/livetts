@@ -253,7 +253,7 @@ class LiveTranslator {
     
     startWhisperListening() {
         try {
-            this.updateStatus('Continuous listening with Whisper AI (8-sec segments)...', '🎤 On');
+            this.updateStatus('Continuous listening with Whisper AI (3-sec segments)...', '🎤 On');
             document.body.classList.add('listening');
             this.elements.startBtn.disabled = true;
             this.elements.stopBtn.disabled = false;
@@ -344,7 +344,7 @@ class LiveTranslator {
                     }
                 }, 100); // Very short gap to allow MediaRecorder to reset
             }
-        }, 8000); // 8-second segments for better accuracy
+        }, 3000); // Back to 3-second segments for faster response
     }
     
     async processAudioWithWhisper() {
@@ -518,34 +518,15 @@ class LiveTranslator {
         
         console.log('Validating transcription:', JSON.stringify(text), 'Length:', text.length);
         
-        // Only filter out obvious technical artifacts - be very specific
-        const technicalArtifacts = [
-            '[music]', '[applause]', '[noise]', '[background music]', '[laughter]', '[blank_audio]',
-            'thanks for watching', 'thanks for listening', 'subscribe', 'like and subscribe'
-        ];
-        
-        // Check for exact matches with technical artifacts only
-        const lowerText = text.toLowerCase().trim();
-        for (const artifact of technicalArtifacts) {
-            if (lowerText === artifact || lowerText.includes(artifact)) {
-                console.log('Validation failed: Contains technical artifact:', artifact);
-                return false;
-            }
-        }
-        
-        // Only filter EXTREMELY obvious repetitive garbage - single character repeated many times
-        if (/^(.)\1{15,}$/.test(text.trim())) {
-            console.log('Validation failed: Single character repeated 15+ times');
-            return false;
-        }
-        
-        // Filter only completely empty or whitespace-only text
-        if (text.trim().length === 0) {
+        // Only filter completely empty or whitespace-only text
+        const trimmed = text.trim();
+        if (trimmed.length === 0) {
             console.log('Validation failed: Only whitespace');
             return false;
         }
         
-        // Accept ALL other text - international languages, short phrases, everything
+        // Accept ALL other text - no filtering for artifacts or patterns
+        // Russian, Japanese, Korean, Chinese, English - everything passes
         console.log('Validation PASSED for:', JSON.stringify(text));
         return true;
     }
