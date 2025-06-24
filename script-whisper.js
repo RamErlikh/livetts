@@ -12,6 +12,9 @@ class LiveTranslator {
         this.isProcessing = false;
         this.lastDetectedLanguage = null;
         this.isModelLoaded = false;
+        this.whisperEnabled = false;
+        this.audioBuffer = null;
+        this.recordingInterval = null;
         
         this.initializeElements();
         this.setupLoadingScreen();
@@ -24,7 +27,7 @@ class LiveTranslator {
             document.body.classList.add('overlay-mode');
         }
         
-        // Auto-load the model on startup
+        // Auto-load the model on startup with better error handling
         this.autoLoadModel();
     }
     
@@ -75,83 +78,106 @@ class LiveTranslator {
     async loadWhisperModel() {
         try {
             this.elements.loadingProgress.style.display = 'block';
-            this.updateLoadingProgress(0, 'Initializing Whisper AI with WebGPU...');
+            this.updateLoadingProgress(0, 'Checking WebGPU compatibility...');
             
             console.log('Starting Whisper model loading...');
             
-            // Import Transformers.js dynamically with the latest version
-            this.updateLoadingProgress(5, 'Loading Transformers.js library...');
-            console.log('Importing Transformers.js...');
-            
-            const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
-            console.log('Transformers.js imported successfully');
-            
-            // Configure environment for optimal WebGPU performance (like HF demo)
-            env.allowRemoteModels = true;
-            env.allowLocalModels = true;
-            
-            // Check for WebGPU support
-            if (navigator.gpu) {
-                console.log('WebGPU is supported - using GPU acceleration');
-                env.backends.onnx.wasm.proxy = false;
-                this.updateLoadingProgress(10, 'WebGPU detected - optimizing for GPU acceleration...');
-            } else {
-                console.log('WebGPU not supported - using optimized WASM');
-                env.backends.onnx.wasm.numThreads = navigator.hardwareConcurrency || 4;
-                env.backends.onnx.wasm.simd = true;
-                env.backends.onnx.wasm.proxy = false;
-                this.updateLoadingProgress(10, 'Using optimized WASM backend...');
+            // Check if we're on HTTPS (required for WebGPU)
+            if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+                console.warn('HTTPS required for WebGPU - falling back to Web Speech API');
+                throw new Error('HTTPS required for Whisper WebGPU support');
             }
             
-            this.updateLoadingProgress(15, 'Loading Whisper model...');
+            // Check WebGPU support with proper error handling
+            let webgpuSupported = false;
+            try {
+                if (navigator.gpu) {
+                    const adapter = await navigator.gpu.requestAdapter();
+                    webgpuSupported = !!adapter;
+                }
+            } catch (error) {
+                console.warn('WebGPU check failed:', error);
+            }
+            
+            this.updateLoadingProgress(10, webgpuSupported ? 'WebGPU detected - loading optimized model...' : 'Using CPU mode...');
+            
+            // Import Transformers.js with timeout and error handling
+            console.log('Importing Transformers.js...');
+            
+            const importPromise = import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+            const timeout = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Import timeout')), 15000)
+            );
+            
+            const { pipeline, env } = await Promise.race([importPromise, timeout]);
+            console.log('Transformers.js imported successfully');
+            
+            // Configure environment with better settings
+            env.allowRemoteModels = true;
+            env.allowLocalModels = false; // Disable local models to avoid CORS issues
+            env.useFSCache = false; // Disable filesystem cache for GitHub Pages
+            
+            if (webgpuSupported) {
+                console.log('Configuring WebGPU backend...');
+                env.backends.onnx.wasm.proxy = false;
+            } else {
+                console.log('Configuring optimized WASM backend...');
+                env.backends.onnx.wasm.numThreads = Math.min(navigator.hardwareConcurrency || 4, 4);
+                env.backends.onnx.wasm.simd = true;
+                env.backends.onnx.wasm.proxy = false;
+            }
+            
+            this.updateLoadingProgress(20, 'Creating Whisper pipeline...');
             console.log('Starting pipeline creation...');
             
-            // Add timeout for model loading
-            const modelPromise = pipeline('automatic-speech-recognition', 'Xenova/whisper-base', {
-                dtype: {
+            // Create pipeline with proper error handling and timeout
+            const modelPromise = pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', {
+                dtype: webgpuSupported ? {
                     encoder_model: 'fp16',
-                    decoder_model_merged: 'q4', // Use quantized model for better performance
-                },
-                device: navigator.gpu ? 'webgpu' : 'wasm',
+                    decoder_model_merged: 'q4',
+                } : 'fp32',
+                device: webgpuSupported ? 'webgpu' : 'wasm',
                 progress_callback: (progress) => {
-                    console.log('Loading progress:', progress);
+                    console.log('Model loading progress:', progress);
                     if (progress.status === 'downloading') {
-                        const percent = 15 + Math.round((progress.loaded / progress.total) * 70);
+                        const percent = 20 + Math.round((progress.loaded / progress.total) * 60);
                         this.updateLoadingProgress(percent, `Downloading: ${Math.round((progress.loaded / progress.total) * 100)}%`);
                     } else if (progress.status === 'loading') {
-                        this.updateLoadingProgress(90, 'Loading model into memory...');
+                        this.updateLoadingProgress(85, 'Loading model into memory...');
                     } else if (progress.status === 'ready') {
                         this.updateLoadingProgress(95, 'Model ready - finalizing...');
                     }
                 }
             });
             
-            // Add 30 second timeout
-            const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => reject(new Error('Model loading timeout - falling back to Web Speech API')), 30000);
+            // Reduced timeout for tiny model
+            const modelTimeout = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Model loading timeout')), 20000);
             });
             
-            this.pipeline = await Promise.race([modelPromise, timeoutPromise]);
+            this.pipeline = await Promise.race([modelPromise, modelTimeout]);
             console.log('Pipeline created successfully');
             
-            this.updateLoadingProgress(100, 'Model loaded successfully!');
+            this.whisperEnabled = true;
+            this.isModelLoaded = true;
+            this.updateLoadingProgress(100, 'Whisper AI loaded successfully!');
             
             // Wait a moment then show main app and auto-start listening
             setTimeout(() => {
-                this.isModelLoaded = true;
                 this.showMainApp();
                 
                 // Auto-start listening for streamers
                 setTimeout(() => {
                     this.startListening();
-                }, 1000);
+                }, 500);
             }, 1000);
             
-            console.log('Whisper pipeline loaded successfully with WebGPU support');
+            console.log('Whisper pipeline loaded successfully');
             
         } catch (error) {
             console.error('Failed to load Whisper pipeline:', error);
-            this.updateLoadingProgress(0, 'Failed to load Whisper - switching to Web Speech API...');
+            this.whisperEnabled = false;
+            this.updateLoadingProgress(0, 'Whisper unavailable - using Web Speech API...');
             
             // Wait then show main app with fallback
             setTimeout(() => {
@@ -161,8 +187,8 @@ class LiveTranslator {
                 // Auto-start listening even in fallback mode
                 setTimeout(() => {
                     this.startListening();
-                }, 1000);
-            }, 2000);
+                }, 500);
+            }, 1500);
         }
     }
     
@@ -189,10 +215,10 @@ class LiveTranslator {
     
     async startListening() {
         try {
-            // Request microphone access
+            // Request microphone access with better error handling
             this.audioStream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
-                    sampleRate: 16000, // Whisper optimal sample rate
+                    sampleRate: 16000,
                     channelCount: 1,
                     echoCancellation: true,
                     noiseSuppression: true,
@@ -200,51 +226,86 @@ class LiveTranslator {
                 } 
             });
             
-            if (this.isModelLoaded) {
-                // Use Whisper AI
+            this.isListening = true;
+            this.updateStatus('Starting...', '🔄');
+            
+            if (this.whisperEnabled && this.isModelLoaded) {
                 this.startWhisperListening();
-            } else if (this.recognition) {
-                // Use Web Speech API fallback
-                this.startWebSpeechListening();
             } else {
-                throw new Error('No speech recognition available');
+                this.startWebSpeechListening();
             }
             
         } catch (error) {
-            console.error('Microphone access error:', error);
-            this.updateStatus('Microphone access denied', '❌');
-            alert('Microphone access is required. Please allow microphone access and try again.');
+            console.error('Failed to access microphone:', error);
+            this.updateStatus('Microphone access denied. Please allow microphone access and refresh.', '❌');
+            
+            // Try fallback without microphone constraints
+            try {
+                this.audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                this.isListening = true;
+                this.startWebSpeechListening();
+            } catch (fallbackError) {
+                console.error('Fallback microphone access failed:', fallbackError);
+                this.updateStatus('Unable to access microphone', '❌');
+            }
         }
     }
     
     startWhisperListening() {
-        // Set up MediaRecorder for Whisper AI with optimal settings
-        this.mediaRecorder = new MediaRecorder(this.audioStream, {
-            mimeType: 'audio/webm;codecs=opus'
-        });
-        
-        this.audioChunks = [];
-        this.isListening = true;
-        
-        this.mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-                this.audioChunks.push(event.data);
+        try {
+            this.updateStatus('Listening with Whisper AI...', '🎤 On');
+            document.body.classList.add('listening');
+            this.elements.startBtn.disabled = true;
+            this.elements.stopBtn.disabled = false;
+            
+            // Clear previous audio chunks
+            this.audioChunks = [];
+            
+            // Setup MediaRecorder with proper error handling
+            const options = {
+                mimeType: 'audio/webm;codecs=opus',
+                audioBitsPerSecond: 16000
+            };
+            
+            // Fallback MIME types if webm is not supported
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                if (MediaRecorder.isTypeSupported('audio/webm')) {
+                    options.mimeType = 'audio/webm';
+                } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+                    options.mimeType = 'audio/mp4';
+                } else {
+                    delete options.mimeType;
+                }
             }
-        };
-        
-        this.mediaRecorder.onstop = () => {
-            if (this.audioChunks.length > 0 && !this.isProcessing && this.isListening) {
-                this.processAudioWithWhisper();
-            }
-        };
-        
-        // Update UI
-        this.elements.startBtn.disabled = true;
-        this.elements.stopBtn.disabled = false;
-        this.updateStatus('Listening...', '🎤');
-        
-        // Start recording in segments for real-time processing
-        this.startRecordingSegments();
+            
+            this.mediaRecorder = new MediaRecorder(this.audioStream, options);
+            
+            this.mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    this.audioChunks.push(event.data);
+                }
+            };
+            
+            this.mediaRecorder.onstop = () => {
+                if (this.audioChunks.length > 0) {
+                    this.processAudioWithWhisper();
+                }
+            };
+            
+            this.mediaRecorder.onerror = (error) => {
+                console.error('MediaRecorder error:', error);
+                this.updateStatus('Recording error - switching to Web Speech API', '⚠️');
+                this.startWebSpeechListening();
+            };
+            
+            // Start recording in segments
+            this.startRecordingSegments();
+            
+        } catch (error) {
+            console.error('Failed to start Whisper listening:', error);
+            this.updateStatus('Whisper error - using Web Speech API', '⚠️');
+            this.startWebSpeechListening();
+        }
     }
     
     startWebSpeechListening() {
@@ -285,25 +346,85 @@ class LiveTranslator {
         this.isProcessing = true;
         
         try {
-            // Convert audio chunks to blob
-            const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm;codecs=opus' });
+            this.updateStatus('Transcribing with Whisper...', '🔄');
             
-            // Convert blob to audio buffer
+            // Convert audio chunks to blob
+            const audioBlob = new Blob(this.audioChunks, { 
+                type: this.mediaRecorder.mimeType || 'audio/webm' 
+            });
+            
+            // Clear chunks after processing
+            this.audioChunks = [];
+            
+            // Convert blob to audio buffer with proper error handling
             const arrayBuffer = await audioBlob.arrayBuffer();
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            
+            if (arrayBuffer.byteLength === 0) {
+                console.warn('Empty audio buffer received');
+                this.isProcessing = false;
+                return;
+            }
+            
+            // Create audio context with proper sample rate
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: 16000
+            });
+            
+            let audioBuffer;
+            try {
+                audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            } catch (decodeError) {
+                console.error('Audio decode error:', decodeError);
+                this.updateStatus('Audio format error - please try again', '⚠️');
+                this.isProcessing = false;
+                return;
+            }
             
             // Get audio data as Float32Array
             let audio = audioBuffer.getChannelData(0);
             
-            // Ensure audio is the right length (pad or trim to 30 seconds max)
-            const maxLength = 16000 * 30; // 30 seconds at 16kHz
+            if (audio.length === 0) {
+                console.warn('Empty audio data');
+                this.isProcessing = false;
+                return;
+            }
+            
+            // Resample to 16kHz if needed (Whisper requirement)
+            if (audioBuffer.sampleRate !== 16000) {
+                const targetLength = Math.round(audio.length * 16000 / audioBuffer.sampleRate);
+                const resampledAudio = new Float32Array(targetLength);
+                
+                for (let i = 0; i < targetLength; i++) {
+                    const sourceIndex = Math.round(i * audioBuffer.sampleRate / 16000);
+                    resampledAudio[i] = audio[Math.min(sourceIndex, audio.length - 1)];
+                }
+                
+                audio = resampledAudio;
+            }
+            
+            // Ensure minimum audio length (at least 1 second)
+            if (audio.length < 16000) {
+                console.warn('Audio too short for reliable transcription');
+                this.isProcessing = false;
+                return;
+            }
+            
+            // Limit audio length (30 seconds max for performance)
+            const maxLength = 16000 * 30;
             if (audio.length > maxLength) {
                 audio = audio.slice(0, maxLength);
             }
             
+            // Check for silent audio
+            const rms = Math.sqrt(audio.reduce((sum, val) => sum + val * val, 0) / audio.length);
+            if (rms < 0.001) {
+                console.warn('Audio appears to be silent');
+                this.isProcessing = false;
+                return;
+            }
+            
             // Transcribe with Whisper
-            this.updateStatus('Transcribing...', '🔄');
+            console.log(`Processing ${audio.length} samples (${audio.length / 16000}s)`);
             
             const result = await this.pipeline(audio, {
                 language: this.currentLanguage === 'auto' ? null : this.currentLanguage,
@@ -311,30 +432,54 @@ class LiveTranslator {
                 return_timestamps: false,
                 chunk_length_s: 30,
                 stride_length_s: 5,
+                temperature: 0.0, // Use deterministic decoding
+                condition_on_previous_text: false, // Prevent random outputs
             });
             
-            // Handle the result
-            if (result && result.text && result.text.trim()) {
-                const transcription = result.text.trim();
+            // Handle the result with better validation
+            if (result && result.text) {
+                let transcription = result.text.trim();
                 
-                // Update detected language if available
-                if (result.language) {
-                    this.lastDetectedLanguage = result.language;
-                    console.log(`Whisper detected language: ${result.language}`);
+                // Filter out common Whisper artifacts and random outputs
+                const artifacts = ['[Music]', '[Applause]', '[Noise]', '[Background music]', 'you', 'Thank you.', 'Thanks for watching!'];
+                const isArtifact = artifacts.some(artifact => 
+                    transcription.toLowerCase().includes(artifact.toLowerCase())
+                );
+                
+                // Only process if transcription is meaningful
+                if (transcription.length > 2 && !isArtifact && transcription !== 'you') {
+                    // Update detected language if available
+                    if (result.language) {
+                        this.lastDetectedLanguage = result.language;
+                        console.log(`Whisper detected language: ${result.language}`);
+                    }
+                    
+                    // Display transcription
+                    this.elements.originalText.textContent = transcription;
+                    
+                    // Translate if needed
+                    if (this.targetLanguage !== this.currentLanguage) {
+                        this.translateText(transcription);
+                    } else {
+                        this.elements.translatedText.textContent = transcription;
+                    }
+                    
+                    console.log('Valid transcription:', transcription);
+                } else {
+                    console.log('Filtered out artifact or short transcription:', transcription);
                 }
-                
-                // Display transcription
-                this.elements.originalText.textContent = transcription;
-                
-                // Translate if needed
-                this.translateText(transcription);
-                
-                console.log('Transcription:', transcription);
             }
+            
+            this.updateStatus('Listening with Whisper AI...', '🎤 On');
             
         } catch (error) {
             console.error('Audio processing error:', error);
-            this.updateStatus('Transcription error', '❌');
+            this.updateStatus('Transcription error - continuing...', '⚠️');
+            
+            // Don't stop listening on processing errors
+            setTimeout(() => {
+                this.updateStatus('Listening with Whisper AI...', '🎤 On');
+            }, 2000);
         } finally {
             this.isProcessing = false;
         }
