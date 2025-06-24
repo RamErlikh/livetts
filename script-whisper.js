@@ -548,8 +548,17 @@ class LiveTranslator {
             // Transcribe with Whisper
             console.log(`Processing ${audio.length} samples (${audio.length / 16000}s), RMS: ${rms.toFixed(4)}`);
             
+            // Determine language for Whisper
+            let whisperLanguage = null;
+            if (this.currentLanguage !== 'auto') {
+                whisperLanguage = this.currentLanguage;
+                console.log(`Using selected language for Whisper: ${whisperLanguage}`);
+            } else {
+                console.log('Using Whisper auto-detection');
+            }
+            
             const result = await this.pipeline(audio, {
-                language: this.currentLanguage === 'auto' ? null : this.currentLanguage,
+                language: whisperLanguage,
                 task: 'transcribe',
                 return_timestamps: false,
                 chunk_length_s: 30,
@@ -663,9 +672,18 @@ class LiveTranslator {
             
             console.log(`Processing ${combinedAudio.length} samples, RMS: ${rms.toFixed(4)}`);
             
+            // Determine language for Whisper
+            let whisperLanguage = null;
+            if (this.currentLanguage !== 'auto') {
+                whisperLanguage = this.currentLanguage;
+                console.log(`Using selected language for Whisper: ${whisperLanguage}`);
+            } else {
+                console.log('Using Whisper auto-detection');
+            }
+            
             // Transcribe with Whisper
             const result = await this.pipeline(combinedAudio, {
-                language: this.currentLanguage === 'auto' ? null : this.currentLanguage,
+                language: whisperLanguage,
                 task: 'transcribe',
                 return_timestamps: false,
                 chunk_length_s: 30,
@@ -1075,7 +1093,8 @@ class LiveTranslator {
             // Determine source language for translation
             let sourceLang = sourceLanguage || this.lastDetectedLanguage || this.currentLanguage;
             if (sourceLang === 'auto') {
-                sourceLang = this.detectLanguageFromScript(text);
+                // Simple fallback - default to English if no detection
+                sourceLang = 'en';
             }
             
             // Skip translation if same language
