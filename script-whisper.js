@@ -207,9 +207,9 @@ class LiveTranslator {
         
         // Update status
         if (this.isModelLoaded) {
-            this.updateStatus('Whisper AI ready - Starting automatically...', '⏳');
+            this.updateStatus('Whisper AI ready - Starting continuous listening...', '⏳');
         } else {
-            this.updateStatus('Fallback mode ready - Starting automatically...', '⏳');
+            this.updateStatus('Web Speech API ready - Starting continuous listening...', '⏳');
         }
     }
     
@@ -227,7 +227,7 @@ class LiveTranslator {
             });
             
             this.isListening = true;
-            this.updateStatus('Starting...', '🔄');
+            this.updateStatus('Starting continuous listening...', '🔄');
             
             if (this.whisperEnabled && this.isModelLoaded) {
                 this.startWhisperListening();
@@ -253,7 +253,7 @@ class LiveTranslator {
     
     startWhisperListening() {
         try {
-            this.updateStatus('Listening with Whisper AI...', '🎤 On');
+            this.updateStatus('Continuous listening with Whisper AI (8-sec segments)...', '🎤 On');
             document.body.classList.add('listening');
             this.elements.startBtn.disabled = true;
             this.elements.stopBtn.disabled = false;
@@ -298,7 +298,7 @@ class LiveTranslator {
                 this.startWebSpeechListening();
             };
             
-            // Start recording in segments
+            // Start continuous recording in segments
             this.startRecordingSegments();
             
         } catch (error) {
@@ -327,39 +327,48 @@ class LiveTranslator {
             clearTimeout(this.recordingInterval);
         }
         
-        // Record 3-second segments with gaps to prevent overlap
+        // Use longer 8-second segments for better transcription accuracy
         this.mediaRecorder.start();
+        console.log('Started recording segment...');
         
         this.recordingInterval = setTimeout(() => {
             if (this.isListening && this.mediaRecorder.state === 'recording') {
                 this.mediaRecorder.stop();
+                console.log('Stopped recording segment for processing...');
                 
-                // Wait for processing to complete before starting next segment
+                // Immediately start next segment without waiting for processing to complete
+                // This ensures continuous listening
                 setTimeout(() => {
-                    if (this.isListening && !this.isProcessing) {
-                        this.audioChunks = []; // Clear previous chunks
-                        this.startRecordingSegments();
+                    if (this.isListening) {
+                        this.startRecordingSegments(); // Start next segment immediately
                     }
-                }, 500); // 500ms gap between segments
+                }, 100); // Very short gap to allow MediaRecorder to reset
             }
-        }, 3000); // 3-second segments for better accuracy and less artifacts
+        }, 8000); // 8-second segments for better accuracy
     }
     
     async processAudioWithWhisper() {
-        if (this.isProcessing || this.audioChunks.length === 0 || !this.isModelLoaded) return;
+        // Process in parallel - don't block listening
+        if (this.isProcessing) {
+            console.log('Already processing audio, skipping...');
+            return;
+        }
+        
+        if (this.audioChunks.length === 0 || !this.isModelLoaded) return;
         
         this.isProcessing = true;
         
+        // Copy chunks for processing and clear immediately to continue recording
+        const chunksToProcess = [...this.audioChunks];
+        this.audioChunks = [];
+        
         try {
-            this.updateStatus('Transcribing with Whisper...', '🔄');
+            this.updateStatus('Transcribing with Whisper AI...', '🔄');
             
             // Convert audio chunks to blob
-            const audioBlob = new Blob(this.audioChunks, { 
+            const audioBlob = new Blob(chunksToProcess, { 
                 type: this.mediaRecorder.mimeType || 'audio/webm' 
             });
-            
-            // Clear chunks after processing
-            this.audioChunks = [];
             
             // Convert blob to audio buffer with proper error handling
             const arrayBuffer = await audioBlob.arrayBuffer();
@@ -380,7 +389,7 @@ class LiveTranslator {
                 audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
             } catch (decodeError) {
                 console.error('Audio decode error:', decodeError);
-                this.updateStatus('Audio format error - please try again', '⚠️');
+                this.updateStatus('Listening with Whisper AI...', '🎤 On'); // Continue listening
                 this.isProcessing = false;
                 return;
             }
@@ -422,38 +431,14 @@ class LiveTranslator {
             
             // Enhanced audio quality checks
             const rms = Math.sqrt(audio.reduce((sum, val) => sum + val * val, 0) / audio.length);
-            if (rms < 0.001) {
-                console.warn('Audio appears to be silent');
-                this.isProcessing = false;
-                return;
+            if (rms < 0.002) { // Slightly more lenient threshold
+                console.warn('Audio appears to be very quiet, but processing anyway...');
+                // Don't return - still try to process quiet audio
             }
             
             // Check for digital noise/artifacts (very high RMS indicates corrupted audio)
             if (rms > 0.5) {
                 console.warn('Audio appears to be corrupted or too loud');
-                this.isProcessing = false;
-                return;
-            }
-            
-            // Check for consistent patterns that indicate digital artifacts
-            const segments = 10;
-            const segmentLength = Math.floor(audio.length / segments);
-            const segmentRMS = [];
-            
-            for (let i = 0; i < segments; i++) {
-                const start = i * segmentLength;
-                const end = Math.min(start + segmentLength, audio.length);
-                const segmentData = audio.slice(start, end);
-                const segmentRmsValue = Math.sqrt(segmentData.reduce((sum, val) => sum + val * val, 0) / segmentData.length);
-                segmentRMS.push(segmentRmsValue);
-            }
-            
-            // Check if all segments have very similar RMS (indicates digital noise)
-            const avgRMS = segmentRMS.reduce((sum, rms) => sum + rms, 0) / segmentRMS.length;
-            const variance = segmentRMS.reduce((sum, rms) => sum + Math.pow(rms - avgRMS, 2), 0) / segmentRMS.length;
-            
-            if (variance < 0.0001 && avgRMS > 0.01) {
-                console.warn('Audio appears to contain digital artifacts - skipping');
                 this.isProcessing = false;
                 return;
             }
@@ -511,16 +496,14 @@ class LiveTranslator {
                 console.log('No text in Whisper result:', result);
             }
             
+            // Always return to listening state
             this.updateStatus('Listening with Whisper AI...', '🎤 On');
             
         } catch (error) {
             console.error('Audio processing error:', error);
-            this.updateStatus('Transcription error - continuing...', '⚠️');
             
-            // Don't stop listening on processing errors
-            setTimeout(() => {
-                this.updateStatus('Listening with Whisper AI...', '🎤 On');
-            }, 2000);
+            // Don't stop listening on processing errors - continue
+            this.updateStatus('Listening with Whisper AI...', '🎤 On');
         } finally {
             this.isProcessing = false;
         }
