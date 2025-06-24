@@ -1,0 +1,7 @@
+openai-whisper>=20230918
+flask>=2.3.0
+flask-cors>=4.0.0
+numpy>=1.21.0
+soundfile>=0.12.0
+torch>=1.13.0
+torchaudio>=0.13.0 

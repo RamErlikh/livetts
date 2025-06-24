@@ -99,7 +99,7 @@ class LiveTranslator {
                 console.warn('WebGPU check failed:', error);
             }
             
-            this.updateLoadingProgress(10, webgpuSupported ? 'WebGPU detected - loading optimized model...' : 'Using CPU mode...');
+            this.updateLoadingProgress(10, webgpuSupported ? 'WebGPU detected - loading 200MB Whisper model...' : 'Using CPU mode - loading 200MB model...');
             
             // Import Transformers.js with timeout and error handling
             console.log('Importing Transformers.js...');
@@ -127,11 +127,11 @@ class LiveTranslator {
                 env.backends.onnx.wasm.proxy = false;
             }
             
-            this.updateLoadingProgress(20, 'Creating Whisper pipeline...');
-            console.log('Starting pipeline creation...');
+            this.updateLoadingProgress(20, 'Loading Whisper-Base model (~200MB)...');
+            console.log('Starting pipeline creation with whisper-base...');
             
-            // Create pipeline with proper error handling and timeout
-            const modelPromise = pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', {
+            // Create pipeline with proper error handling and timeout - using whisper-base (200MB)
+            const modelPromise = pipeline('automatic-speech-recognition', 'Xenova/whisper-base', {
                 dtype: webgpuSupported ? {
                     encoder_model: 'fp16',
                     decoder_model_merged: 'q4',
@@ -141,7 +141,7 @@ class LiveTranslator {
                     console.log('Model loading progress:', progress);
                     if (progress.status === 'downloading') {
                         const percent = 20 + Math.round((progress.loaded / progress.total) * 60);
-                        this.updateLoadingProgress(percent, `Downloading: ${Math.round((progress.loaded / progress.total) * 100)}%`);
+                        this.updateLoadingProgress(percent, `Downloading: ${Math.round((progress.loaded / progress.total) * 100)}% (~200MB)`);
                     } else if (progress.status === 'loading') {
                         this.updateLoadingProgress(85, 'Loading model into memory...');
                     } else if (progress.status === 'ready') {
@@ -150,17 +150,17 @@ class LiveTranslator {
                 }
             });
             
-            // Reduced timeout for tiny model
+            // Extended timeout for larger model
             const modelTimeout = new Promise((_, reject) => {
-                setTimeout(() => reject(new Error('Model loading timeout')), 20000);
+                setTimeout(() => reject(new Error('Model loading timeout')), 45000);
             });
             
             this.pipeline = await Promise.race([modelPromise, modelTimeout]);
-            console.log('Pipeline created successfully');
+            console.log('Whisper-base pipeline created successfully');
             
             this.whisperEnabled = true;
             this.isModelLoaded = true;
-            this.updateLoadingProgress(100, 'Whisper AI loaded successfully!');
+            this.updateLoadingProgress(100, 'Whisper AI (200MB model) loaded successfully!');
             
             // Wait a moment then show main app and auto-start listening
             setTimeout(() => {
@@ -172,7 +172,7 @@ class LiveTranslator {
                 }, 500);
             }, 1000);
             
-            console.log('Whisper pipeline loaded successfully');
+            console.log('Whisper-base pipeline loaded successfully');
             
         } catch (error) {
             console.error('Failed to load Whisper pipeline:', error);
@@ -476,14 +476,16 @@ class LiveTranslator {
             if (result && result.text) {
                 let transcription = result.text.trim();
                 
-                console.log('Raw transcription:', transcription);
+                console.log('Raw Whisper transcription:', transcription);
                 
                 // Enhanced artifact filtering
                 if (!this.isValidTranscription(transcription)) {
-                    console.log('Filtered out invalid transcription:', transcription);
+                    console.log('Filtered out transcription:', transcription);
                     this.isProcessing = false;
                     return;
                 }
+                
+                console.log('Valid transcription accepted:', transcription);
                 
                 // Update detected language if available
                 if (result.language) {
@@ -493,15 +495,20 @@ class LiveTranslator {
                 
                 // Display transcription
                 this.elements.originalText.textContent = transcription;
+                console.log('Transcription displayed in UI');
                 
                 // Translate if needed
                 if (this.targetLanguage !== this.currentLanguage && this.targetLanguage !== 'auto') {
+                    console.log('Starting translation...');
                     this.translateText(transcription);
                 } else {
+                    console.log('No translation needed, displaying original');
                     this.elements.translatedText.textContent = transcription;
                 }
                 
-                console.log('Valid transcription:', transcription);
+                console.log('Processing complete for:', transcription);
+            } else {
+                console.log('No text in Whisper result:', result);
             }
             
             this.updateStatus('Listening with Whisper AI...', '🎤 On');
@@ -519,38 +526,32 @@ class LiveTranslator {
         }
     }
     
-    // Enhanced transcription validation
+    // Enhanced transcription validation - made less aggressive
     isValidTranscription(text) {
-        if (!text || text.length < 2) return false;
+        if (!text || text.length < 1) return false;
         
-        // Common Whisper artifacts and patterns to filter out
-        const artifacts = [
-            '[Music]', '[Applause]', '[Noise]', '[Background music]', 
-            'you', 'Thank you.', 'Thanks for watching!', 'Bye.', 'Goodbye.',
-            'Hello.', 'Hi.', 'Hey.', 'Okay.', 'OK.', 'Hmm.', 'Um.', 'Uh.',
-            'So.', 'Well.', 'Now.', 'Here.', 'There.', 'This.'
+        // Only filter out obvious artifacts, not normal speech
+        const clearArtifacts = [
+            '[Music]', '[Applause]', '[Noise]', '[Background music]', '[Laughter]'
         ];
         
-        // Check for exact matches with common artifacts
-        if (artifacts.some(artifact => text.toLowerCase() === artifact.toLowerCase())) {
+        // Check for exact matches with clear artifacts only
+        if (clearArtifacts.some(artifact => text.toLowerCase().includes(artifact.toLowerCase()))) {
             return false;
         }
         
-        // Check for repetitive single characters or short patterns
-        const repetitivePatterns = [
-            /^(.)\1{4,}$/, // Single character repeated 5+ times (e.g., "aaaaa")
-            /^(.{1,3})\1{3,}$/, // Short pattern repeated 4+ times (e.g., "abcabcabc")
-            /^\[(.)\]\s*\[(.)\]/, // Bracketed single characters (e.g., "[S] [S]")
-            /^["'](.)\1{4,}["']$/, // Quoted repetitive characters
-            /^(.)\s+\1\s+\1\s+\1/, // Spaced repetitive characters (e.g., "S S S S")
-            /^\w\s\w\s\w\s\w/, // Single letter with spaces pattern
+        // Only filter very repetitive patterns (relaxed from previous version)
+        const severeRepetitivePatterns = [
+            /^(.)\1{10,}$/, // Single character repeated 10+ times (was 5+)
+            /^\[(.)\]\s*\[(.)\]\s*\[(.)\]\s*\[(.)\]/, // 4+ bracketed single characters
+            /^(.)\s+\1\s+\1\s+\1\s+\1\s+\1/, // 6+ spaced repetitive characters (was 4+)
         ];
         
-        if (repetitivePatterns.some(pattern => pattern.test(text))) {
+        if (severeRepetitivePatterns.some(pattern => pattern.test(text))) {
             return false;
         }
         
-        // Check for excessive repetition of any character
+        // Only filter if a single character makes up more than 80% (was 60%)
         const charCounts = {};
         let totalChars = 0;
         
@@ -561,9 +562,8 @@ class LiveTranslator {
             }
         }
         
-        // If any single character makes up more than 60% of the text, it's likely an artifact
         for (const [char, count] of Object.entries(charCounts)) {
-            if (count / totalChars > 0.6) {
+            if (count / totalChars > 0.8) {
                 return false;
             }
         }
@@ -573,18 +573,15 @@ class LiveTranslator {
             return false;
         }
         
-        // Must contain at least one vowel (for real speech)
-        if (!/[aeiouAEIOU]/.test(text)) {
-            return false;
-        }
+        // Removed vowel requirement - many languages don't follow this pattern
         
-        // Too many consecutive identical words
+        // Only filter if 6+ consecutive identical words (was 4+)
         const words = text.split(/\s+/);
         let consecutiveCount = 1;
         for (let i = 1; i < words.length; i++) {
             if (words[i].toLowerCase() === words[i-1].toLowerCase()) {
                 consecutiveCount++;
-                if (consecutiveCount >= 4) {
+                if (consecutiveCount >= 6) {
                     return false;
                 }
             } else {
