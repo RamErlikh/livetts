@@ -16,6 +16,12 @@ class LiveTranslator {
         this.audioBuffer = null;
         this.recordingInterval = null;
         
+        // Parallel processing system
+        this.processingQueue = [];
+        this.activeRecording = null;
+        this.nextRecording = null;
+        this.recordingCounter = 0;
+        
         this.initializeElements();
         this.setupLoadingScreen();
         this.initializeEventListeners();
@@ -547,14 +553,14 @@ class LiveTranslator {
             console.log(`Processing ${audio.length} samples (${audio.length / 16000}s), RMS: ${rms.toFixed(4)}`);
             
             const result = await this.pipeline(audio, {
-                language: this.currentLanguage === 'auto' ? 'ru' : this.currentLanguage,
+                language: this.currentLanguage === 'auto' ? null : this.currentLanguage,
                 task: 'transcribe',
                 return_timestamps: false,
                 chunk_length_s: 30,
                 stride_length_s: 5,
-                temperature: 0.0, // Use deterministic decoding
-                condition_on_previous_text: false, // Prevent random outputs
-                no_timestamps: true, // Disable timestamps to reduce artifacts
+                temperature: 0.0,
+                condition_on_previous_text: false,
+                no_timestamps: true,
             });
             
             // Handle the result with enhanced validation
@@ -568,27 +574,33 @@ class LiveTranslator {
                 console.log(`Transcription validation result: ${isValid ? 'VALID' : 'INVALID'} - "${transcription}"`);
                 
                 if (isValid) {
-                    // Set detected language to Russian when using auto-detect
-                    if (this.currentLanguage === 'auto') {
-                        this.lastDetectedLanguage = 'ru'; // Force Russian detection
-                        console.log('Forced language detection to Russian');
-                    } else if (result.language) {
+                    // Proper language detection from Whisper result
+                    if (result.language) {
                         this.lastDetectedLanguage = result.language;
                         console.log(`Whisper detected language: ${result.language}`);
+                    } else if (this.currentLanguage === 'auto') {
+                        // Fallback language detection based on script
+                        this.lastDetectedLanguage = this.detectLanguageFromScript(transcription);
+                        console.log(`Script-based language detection: ${this.lastDetectedLanguage}`);
                     }
                     
-                    // Display transcription
-                    this.elements.originalText.textContent = transcription;
+                    // Create processing instance for parallel handling
+                    const processingInstance = {
+                        id: ++this.recordingCounter,
+                        transcription: transcription,
+                        detectedLanguage: this.lastDetectedLanguage,
+                        timestamp: Date.now(),
+                        isProcessing: false,
+                        translation: null
+                    };
                     
-                    // Translate if needed
-                    if (this.targetLanguage !== this.currentLanguage && this.targetLanguage !== 'auto') {
-                        console.log(`Translating from ${this.lastDetectedLanguage || this.currentLanguage} to ${this.targetLanguage}`);
-                        this.translateText(transcription);
-                    } else {
-                        this.elements.translatedText.textContent = transcription;
-                    }
+                    // Add to processing queue
+                    this.processingQueue.push(processingInstance);
+                    console.log(`Added processing instance ${processingInstance.id} to queue`);
                     
-                    console.log('✅ Valid transcription processed:', transcription);
+                    // Process this instance
+                    this.processInstance(processingInstance);
+                    
                 } else {
                     console.log('❌ Filtered out invalid transcription:', transcription);
                     
@@ -654,7 +666,7 @@ class LiveTranslator {
             
             // Transcribe with Whisper
             const result = await this.pipeline(combinedAudio, {
-                language: this.currentLanguage === 'auto' ? 'ru' : this.currentLanguage,
+                language: this.currentLanguage === 'auto' ? null : this.currentLanguage,
                 task: 'transcribe',
                 return_timestamps: false,
                 chunk_length_s: 30,
@@ -671,26 +683,33 @@ class LiveTranslator {
                 console.log('Raw transcription:', transcription);
                 
                 if (this.isValidTranscription(transcription)) {
-                    // Set detected language to Russian when using auto-detect
-                    if (this.currentLanguage === 'auto') {
-                        this.lastDetectedLanguage = 'ru'; // Force Russian detection
-                        console.log('Forced language detection to Russian (Web Audio)');
-                    } else if (result.language) {
+                    // Proper language detection from Whisper result
+                    if (result.language) {
                         this.lastDetectedLanguage = result.language;
                         console.log(`Whisper detected language: ${result.language}`);
+                    } else if (this.currentLanguage === 'auto') {
+                        // Fallback language detection based on script
+                        this.lastDetectedLanguage = this.detectLanguageFromScript(transcription);
+                        console.log(`Script-based language detection: ${this.lastDetectedLanguage}`);
                     }
                     
-                    // Display transcription
-                    this.elements.originalText.textContent = transcription;
+                    // Create processing instance for parallel handling
+                    const processingInstance = {
+                        id: ++this.recordingCounter,
+                        transcription: transcription,
+                        detectedLanguage: this.lastDetectedLanguage,
+                        timestamp: Date.now(),
+                        isProcessing: false,
+                        translation: null
+                    };
                     
-                    // Translate if needed
-                    if (this.targetLanguage !== this.currentLanguage && this.targetLanguage !== 'auto') {
-                        this.translateText(transcription);
-                    } else {
-                        this.elements.translatedText.textContent = transcription;
-                    }
+                    // Add to processing queue
+                    this.processingQueue.push(processingInstance);
+                    console.log(`Added Web Audio processing instance ${processingInstance.id} to queue`);
                     
-                    console.log('Valid transcription:', transcription);
+                    // Process this instance
+                    this.processInstance(processingInstance);
+                    
                 } else {
                     console.log('Filtered out invalid transcription:', transcription);
                 }
@@ -1042,8 +1061,8 @@ class LiveTranslator {
         });
     }
     
-    async translateText(text) {
-        if (!text.trim()) return;
+    async translateText(text, sourceLanguage = null) {
+        if (!text.trim()) return text;
         
         this.updateStatus('Translating...', '🔄');
         
@@ -1052,17 +1071,15 @@ class LiveTranslator {
             let serviceUsed = 'Unknown';
             
             // Determine source language for translation
-            let sourceLanguage = this.currentLanguage;
-            if (this.currentLanguage === 'auto' && this.lastDetectedLanguage) {
-                sourceLanguage = this.lastDetectedLanguage;
+            let sourceLang = sourceLanguage || this.lastDetectedLanguage || this.currentLanguage;
+            if (sourceLang === 'auto') {
+                sourceLang = this.detectLanguageFromScript(text);
             }
             
             // Skip translation if same language
-            if (sourceLanguage === this.targetLanguage) {
-                this.elements.translatedText.textContent = text;
-                this.addToHistory(text, text);
-                this.updateStatus('Same language - no translation needed', '✅');
-                return;
+            if (sourceLang === this.targetLanguage) {
+                console.log('Same language - no translation needed');
+                return text;
             }
             
             // Always try to translate, don't use fallback as first option
@@ -1070,7 +1087,7 @@ class LiveTranslator {
             
             if (this.apiKey) {
                 try {
-                    translatedText = await this.translateWithGoogleAPI(text, sourceLanguage);
+                    translatedText = await this.translateWithGoogleAPI(text, sourceLang);
                     serviceUsed = 'Google Translate API';
                     success = true;
                 } catch (error) {
@@ -1082,12 +1099,12 @@ class LiveTranslator {
             if (!success) {
                 const services = [
                     { 
-                        fn: () => this.translateWithMyMemory(text, sourceLanguage), 
+                        fn: () => this.translateWithMyMemory(text, sourceLang), 
                         name: 'MyMemory',
                         corsOptimized: true
                     },
                     { 
-                        fn: () => this.translateWithDictionary(text, sourceLanguage), 
+                        fn: () => this.translateWithDictionary(text, sourceLang), 
                         name: 'Dictionary',
                         corsOptimized: true
                     }
@@ -1118,41 +1135,12 @@ class LiveTranslator {
                 console.warn('All translation services failed - showing original text');
             }
             
-            // Always update the translation display
-            this.elements.translatedText.textContent = translatedText;
-            this.addToHistory(text, translatedText);
-            
-            // TTS: Only speak if we have a successful translation and auto-speak is enabled
-            if (this.elements.autoSpeak.checked && success && translatedText && 
-                translatedText !== text && // Don't speak if it's the same as original
-                !translatedText.includes('[') && !translatedText.includes('→')) {
-                console.log('🔊 Speaking translation:', translatedText);
-                this.speakText(translatedText);
-            } else if (this.elements.autoSpeak.checked && !success) {
-                console.log('🔇 Not speaking - no valid translation available');
-            }
-            
-            // Show which service was used
-            const langInfo = this.currentLanguage === 'auto' && this.lastDetectedLanguage 
-                ? ` (detected: ${this.getLanguageName(this.lastDetectedLanguage)})` 
-                : '';
-            this.updateStatus(`Translated via ${serviceUsed}${langInfo}`, '✅');
-            
-            setTimeout(() => {
-                if (this.isListening) {
-                    const mode = this.isModelLoaded ? 'Whisper AI' : 'Web Speech API';
-                    this.updateStatus(`Listening with ${mode}...`, '🎤 On');
-                }
-            }, 2000);
+            console.log(`Translation via ${serviceUsed}: "${text}" → "${translatedText}"`);
+            return translatedText;
             
         } catch (error) {
             console.error('Translation error:', error);
-            
-            // Just show original text on error
-            this.elements.translatedText.textContent = text;
-            this.addToHistory(text, text);
-            
-            this.updateStatus('Translation failed - showing original', '⚠️');
+            return text; // Return original text on error
         }
     }
     
@@ -1179,9 +1167,9 @@ class LiveTranslator {
     
     async translateWithMyMemory(text, sourceLanguage = null) {
         // Determine proper source language - never use 'auto'
-        let sourceLang = sourceLanguage || this.lastDetectedLanguage || 'ru';
-        if (sourceLang === 'auto') {
-            sourceLang = 'ru'; // Default to Russian
+        let sourceLang = sourceLanguage;
+        if (!sourceLang || sourceLang === 'auto') {
+            sourceLang = this.lastDetectedLanguage || this.detectLanguageFromScript(text);
         }
         
         const limitedText = text.length > 500 ? text.substring(0, 500) + '...' : text;
@@ -1575,6 +1563,96 @@ class LiveTranslator {
         
         console.log('✅ New validation is much more permissive - only blocks obvious artifacts!');
         console.groupEnd();
+    }
+
+    // Language detection based on script/characters
+    detectLanguageFromScript(text) {
+        // Check for different scripts
+        const hasKorean = /[\u3131-\u3163\uac00-\ud7a3]/g.test(text);
+        const hasJapanese = /[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/g.test(text);
+        const hasCyrillic = /[\u0400-\u04ff]/g.test(text);
+        const hasChinese = /[\u4e00-\u9fff]/g.test(text);
+        const hasArabic = /[\u0600-\u06ff]/g.test(text);
+        const hasHindi = /[\u0900-\u097f]/g.test(text);
+        
+        if (hasKorean) return 'ko';
+        if (hasJapanese) return 'ja';
+        if (hasCyrillic) return 'ru';
+        if (hasChinese) return 'zh';
+        if (hasArabic) return 'ar';
+        if (hasHindi) return 'hi';
+        
+        // Default to English for Latin script
+        return 'en';
+    }
+    
+    // Process individual instance with translation
+    async processInstance(instance) {
+        if (instance.isProcessing) return;
+        
+        instance.isProcessing = true;
+        console.log(`🔄 Processing instance ${instance.id}: "${instance.transcription}"`);
+        
+        try {
+            // Translate if needed
+            if (this.targetLanguage !== instance.detectedLanguage && this.targetLanguage !== 'auto') {
+                console.log(`Translating from ${instance.detectedLanguage} to ${this.targetLanguage}`);
+                instance.translation = await this.translateText(instance.transcription, instance.detectedLanguage);
+            } else {
+                instance.translation = instance.transcription;
+            }
+            
+            // Switch to this instance for display
+            this.switchToInstance(instance);
+            
+        } catch (error) {
+            console.error(`Error processing instance ${instance.id}:`, error);
+            instance.translation = instance.transcription; // Fallback to original
+            this.switchToInstance(instance);
+        }
+        
+        instance.isProcessing = false;
+        console.log(`✅ Completed processing instance ${instance.id}`);
+    }
+    
+    // Switch display to the completed instance
+    switchToInstance(instance) {
+        console.log(`🔄 Switching to instance ${instance.id}`);
+        
+        // Update display
+        this.elements.originalText.textContent = instance.transcription;
+        this.elements.translatedText.textContent = instance.translation;
+        
+        // Add to history
+        this.addToHistory(instance.transcription, instance.translation);
+        
+        // TTS if enabled and translation is different from original
+        if (this.elements.autoSpeak.checked && 
+            instance.translation && 
+            instance.translation !== instance.transcription &&
+            !instance.translation.includes('[') && 
+            !instance.translation.includes('→')) {
+            console.log('🔊 Speaking translation:', instance.translation);
+            this.speakText(instance.translation);
+        }
+        
+        // Update status with language info
+        const langInfo = instance.detectedLanguage 
+            ? ` (${this.getLanguageName(instance.detectedLanguage)} detected)` 
+            : '';
+        this.updateStatus(`Translated${langInfo}`, '✅');
+        
+        // Clean up old instances from queue (keep last 3)
+        if (this.processingQueue.length > 3) {
+            this.processingQueue = this.processingQueue.slice(-3);
+        }
+        
+        setTimeout(() => {
+            if (this.isListening) {
+                const mode = this.isModelLoaded ? 'Whisper AI' : 'Web Speech API';
+                this.updateStatus(`Listening with ${mode}...`, '🎤 On');
+            }
+        }, 2000);
     }
 }
 
