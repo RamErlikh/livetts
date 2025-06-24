@@ -409,12 +409,12 @@ class LiveTranslator {
                 console.log('Stopping segment for processing...');
                 this.mediaRecorder.stop();
                 
-                // Wait for processing to complete, then start next segment
+                // Start next segment immediately (parallel recording/processing)
                 setTimeout(() => {
                     if (this.isListening) {
                         this.startRecordingSegments();
                     }
-                }, 100); // Small delay to ensure processing starts
+                }, 50); // Very small delay to ensure MediaRecorder state changes
             }
         }, 4000); // 4-second complete segments
     }
@@ -563,30 +563,35 @@ class LiveTranslator {
                 
                 console.log('Raw transcription:', transcription);
                 
-                // Enhanced artifact filtering
-                if (!this.isValidTranscription(transcription)) {
-                    console.log('Filtered out invalid transcription:', transcription);
-                    this.isProcessing = false;
-                    return;
-                }
+                // Enhanced artifact filtering with detailed logging
+                const isValid = this.isValidTranscription(transcription);
+                console.log(`Transcription validation result: ${isValid ? 'VALID' : 'INVALID'} - "${transcription}"`);
                 
-                // Update detected language if available
-                if (result.language) {
-                    this.lastDetectedLanguage = result.language;
-                    console.log(`Whisper detected language: ${result.language}`);
-                }
-                
-                // Display transcription
-                this.elements.originalText.textContent = transcription;
-                
-                // Translate if needed
-                if (this.targetLanguage !== this.currentLanguage && this.targetLanguage !== 'auto') {
-                    this.translateText(transcription);
+                if (isValid) {
+                    // Update detected language if available
+                    if (result.language) {
+                        this.lastDetectedLanguage = result.language;
+                        console.log(`Whisper detected language: ${result.language}`);
+                    }
+                    
+                    // Display transcription
+                    this.elements.originalText.textContent = transcription;
+                    
+                    // Translate if needed
+                    if (this.targetLanguage !== this.currentLanguage && this.targetLanguage !== 'auto') {
+                        console.log(`Translating from ${this.lastDetectedLanguage || this.currentLanguage} to ${this.targetLanguage}`);
+                        this.translateText(transcription);
+                    } else {
+                        this.elements.translatedText.textContent = transcription;
+                    }
+                    
+                    console.log('✅ Valid transcription processed:', transcription);
                 } else {
-                    this.elements.translatedText.textContent = transcription;
+                    console.log('❌ Filtered out invalid transcription:', transcription);
+                    
+                    // Show debug info for why it was filtered
+                    this.debugTranscriptionFiltering(transcription);
                 }
-                
-                console.log('Valid transcription:', transcription);
             }
             
             this.updateStatus('Listening with Whisper AI...', '🎤 On');
@@ -699,16 +704,14 @@ class LiveTranslator {
         }
     }
     
-    // Enhanced transcription validation
+    // Enhanced transcription validation - fixed for international characters
     isValidTranscription(text) {
         if (!text || text.length < 2) return false;
         
         // Common Whisper artifacts and patterns to filter out
         const artifacts = [
             '[Music]', '[Applause]', '[Noise]', '[Background music]', 
-            'you', 'Thank you.', 'Thanks for watching!', 'Bye.', 'Goodbye.',
-            'Hello.', 'Hi.', 'Hey.', 'Okay.', 'OK.', 'Hmm.', 'Um.', 'Uh.',
-            'So.', 'Well.', 'Now.', 'Here.', 'There.', 'This.'
+            'Thank you.', 'Thanks for watching!', 'Bye.', 'Goodbye.',
         ];
         
         // Check for exact matches with common artifacts
@@ -735,15 +738,15 @@ class LiveTranslator {
         let totalChars = 0;
         
         for (const char of text.toLowerCase()) {
-            if (char.match(/[a-z]/)) {
+            if (char.match(/\w/)) { // Changed from [a-z] to \w to support international characters
                 charCounts[char] = (charCounts[char] || 0) + 1;
                 totalChars++;
             }
         }
         
-        // If any single character makes up more than 60% of the text, it's likely an artifact
+        // If any single character makes up more than 70% of the text, it's likely an artifact
         for (const [char, count] of Object.entries(charCounts)) {
-            if (count / totalChars > 0.6) {
+            if (count / totalChars > 0.7) { // Increased from 60% to 70%
                 return false;
             }
         }
@@ -753,8 +756,12 @@ class LiveTranslator {
             return false;
         }
         
-        // Must contain at least one vowel (for real speech)
-        if (!/[aeiouAEIOU]/.test(text)) {
+        // Modified vowel check to support international characters
+        // Check for vowels in Latin script OR if text contains non-Latin characters (like Cyrillic, Chinese, etc.)
+        const hasLatinVowels = /[aeiouAEIOU]/.test(text);
+        const hasNonLatinChars = /[^\x00-\x7F]/.test(text); // Non-ASCII characters
+        
+        if (!hasLatinVowels && !hasNonLatinChars) {
             return false;
         }
         
@@ -769,6 +776,14 @@ class LiveTranslator {
                 }
             } else {
                 consecutiveCount = 1;
+            }
+        }
+        
+        // Additional check for very short single words that are likely artifacts
+        if (words.length === 1 && text.length <= 3 && /^[a-zA-Z]+$/.test(text)) {
+            const shortArtifacts = ['you', 'the', 'and', 'but', 'yes', 'no', 'ok', 'so', 'um', 'uh', 'ah'];
+            if (shortArtifacts.includes(text.toLowerCase())) {
+                return false;
             }
         }
         
@@ -1394,6 +1409,44 @@ class LiveTranslator {
         };
         
         return languageMap[language] || 'en-US';
+    }
+
+    // Debug function to show why transcriptions are filtered
+    debugTranscriptionFiltering(text) {
+        console.group('🔍 Transcription filtering debug:');
+        console.log('Text:', text);
+        console.log('Length:', text.length);
+        
+        // Check vowels
+        const hasLatinVowels = /[aeiouAEIOU]/.test(text);
+        const hasNonLatinChars = /[^\x00-\x7F]/.test(text);
+        console.log('Has Latin vowels:', hasLatinVowels);
+        console.log('Has non-Latin chars:', hasNonLatinChars);
+        
+        // Check character distribution
+        const charCounts = {};
+        let totalChars = 0;
+        for (const char of text.toLowerCase()) {
+            if (char.match(/\w/)) {
+                charCounts[char] = (charCounts[char] || 0) + 1;
+                totalChars++;
+            }
+        }
+        
+        if (totalChars > 0) {
+            const maxCharPercentage = Math.max(...Object.values(charCounts)) / totalChars;
+            console.log('Max character percentage:', (maxCharPercentage * 100).toFixed(1) + '%');
+        }
+        
+        // Check for artifacts
+        const artifacts = [
+            '[Music]', '[Applause]', '[Noise]', '[Background music]', 
+            'Thank you.', 'Thanks for watching!', 'Bye.', 'Goodbye.',
+        ];
+        const isArtifact = artifacts.some(artifact => text.toLowerCase() === artifact.toLowerCase());
+        console.log('Is common artifact:', isArtifact);
+        
+        console.groupEnd();
     }
 }
 
