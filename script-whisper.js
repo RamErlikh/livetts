@@ -230,7 +230,13 @@ class LiveTranslator {
             this.updateStatus('Starting...', '🔄');
             
             if (this.whisperEnabled && this.isModelLoaded) {
-                this.startWhisperListening();
+                // Try MediaRecorder first, fallback to Web Audio API if it fails
+                try {
+                    this.startWhisperListening();
+                } catch (error) {
+                    console.warn('MediaRecorder failed, trying Web Audio API:', error);
+                    this.startWebAudioListening();
+                }
             } else {
                 this.startWebSpeechListening();
             }
@@ -284,18 +290,13 @@ class LiveTranslator {
                 if (event.data.size > 0) {
                     this.audioChunks.push(event.data);
                     console.log(`Audio chunk received: ${event.data.size} bytes`);
-                    
-                    // Process audio immediately when we have data
-                    if (this.audioChunks.length > 0 && !this.isProcessing) {
-                        this.processAudioWithWhisper();
-                    }
                 }
             };
             
             this.mediaRecorder.onstop = () => {
-                console.log('MediaRecorder stopped');
-                // Only process remaining chunks if we're still listening
-                if (this.audioChunks.length > 0 && this.isListening) {
+                console.log('MediaRecorder stopped for processing');
+                // Process the complete audio segment
+                if (this.audioChunks.length > 0 && this.isListening && !this.isProcessing) {
                     this.processAudioWithWhisper();
                 }
             };
@@ -306,11 +307,70 @@ class LiveTranslator {
                 this.startWebSpeechListening();
             };
             
-            // Start continuous recording
+            // Start segmented recording approach
             this.startRecordingSegments();
             
         } catch (error) {
             console.error('Failed to start Whisper listening:', error);
+            this.updateStatus('Whisper error - using Web Speech API', '⚠️');
+            this.startWebSpeechListening();
+        }
+    }
+    
+    startWebAudioListening() {
+        try {
+            console.log('Starting Web Audio API recording as fallback');
+            this.updateStatus('Listening with Whisper AI (Web Audio)...', '🎤 On');
+            document.body.classList.add('listening');
+            this.elements.startBtn.disabled = true;
+            this.elements.stopBtn.disabled = false;
+            
+            // Create Web Audio API context
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: 16000
+            });
+            
+            // Create source from microphone stream
+            const source = audioContext.createMediaStreamSource(this.audioStream);
+            
+            // Create script processor for capturing audio data
+            const bufferSize = 4096;
+            const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+            
+            // Array to collect audio samples
+            this.audioSamples = [];
+            this.lastProcessTime = Date.now();
+            
+            processor.onaudioprocess = (event) => {
+                if (!this.isListening) return;
+                
+                const inputBuffer = event.inputBuffer;
+                const inputData = inputBuffer.getChannelData(0);
+                
+                // Copy audio data
+                const samples = new Float32Array(inputData.length);
+                samples.set(inputData);
+                this.audioSamples.push(samples);
+                
+                // Process every 4 seconds
+                const now = Date.now();
+                if (now - this.lastProcessTime >= 4000) {
+                    this.processWebAudioSamples();
+                    this.lastProcessTime = now;
+                }
+            };
+            
+            // Connect the audio processing chain
+            source.connect(processor);
+            processor.connect(audioContext.destination);
+            
+            // Store references for cleanup
+            this.audioContext = audioContext;
+            this.audioProcessor = processor;
+            this.audioSource = source;
+            
+        } catch (error) {
+            console.error('Web Audio API failed:', error);
             this.updateStatus('Whisper error - using Web Speech API', '⚠️');
             this.startWebSpeechListening();
         }
@@ -335,22 +395,28 @@ class LiveTranslator {
             clearTimeout(this.recordingInterval);
         }
         
-        // Start continuous recording without stopping
-        if (this.mediaRecorder.state === 'inactive') {
-            this.mediaRecorder.start();
-            console.log('Started continuous recording');
-        }
+        // Clear previous chunks
+        this.audioChunks = [];
         
-        // Process audio data every 4 seconds but keep recording
+        console.log('Starting new recording segment...');
+        
+        // Start recording a complete segment
+        this.mediaRecorder.start();
+        
+        // Stop recording after 4 seconds to create a complete segment
         this.recordingInterval = setTimeout(() => {
             if (this.isListening && this.mediaRecorder.state === 'recording') {
-                // Request data without stopping the recorder
-                this.mediaRecorder.requestData();
+                console.log('Stopping segment for processing...');
+                this.mediaRecorder.stop();
                 
-                // Schedule next data request
-                this.startRecordingSegments();
+                // Wait for processing to complete, then start next segment
+                setTimeout(() => {
+                    if (this.isListening) {
+                        this.startRecordingSegments();
+                    }
+                }, 100); // Small delay to ensure processing starts
             }
-        }, 4000); // 4-second intervals for processing
+        }, 4000); // 4-second complete segments
     }
     
     async processAudioWithWhisper() {
@@ -370,6 +436,8 @@ class LiveTranslator {
                 type: this.mediaRecorder.mimeType || 'audio/webm' 
             });
             
+            console.log(`Processing audio blob: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
+            
             // Convert blob to audio buffer with proper error handling
             const arrayBuffer = await audioBlob.arrayBuffer();
             
@@ -387,10 +455,17 @@ class LiveTranslator {
             let audioBuffer;
             try {
                 audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                console.log(`Audio decoded successfully: ${audioBuffer.duration}s, ${audioBuffer.sampleRate}Hz`);
             } catch (decodeError) {
                 console.error('Audio decode error:', decodeError);
-                this.updateStatus('Audio format error - please try again', '⚠️');
+                console.log('Blob details:', { size: audioBlob.size, type: audioBlob.type });
+                this.updateStatus('Audio format error - continuing...', '⚠️');
                 this.isProcessing = false;
+                
+                // Continue listening even after decode errors
+                setTimeout(() => {
+                    this.updateStatus('Listening with Whisper AI...', '🎤 On');
+                }, 1000);
                 return;
             }
             
@@ -414,6 +489,7 @@ class LiveTranslator {
                 }
                 
                 audio = resampledAudio;
+                console.log(`Resampled from ${audioBuffer.sampleRate}Hz to 16000Hz`);
             }
             
             // Ensure minimum audio length (at least 1 second)
@@ -528,6 +604,101 @@ class LiveTranslator {
         }
     }
     
+    async processWebAudioSamples() {
+        if (this.isProcessing || this.audioSamples.length === 0 || !this.isModelLoaded) return;
+        
+        this.isProcessing = true;
+        
+        try {
+            this.updateStatus('Transcribing with Whisper...', '🔄');
+            
+            // Combine all audio samples
+            const totalLength = this.audioSamples.reduce((sum, samples) => sum + samples.length, 0);
+            const combinedAudio = new Float32Array(totalLength);
+            
+            let offset = 0;
+            for (const samples of this.audioSamples) {
+                combinedAudio.set(samples, offset);
+                offset += samples.length;
+            }
+            
+            // Clear samples
+            this.audioSamples = [];
+            
+            console.log(`Processing Web Audio samples: ${combinedAudio.length} samples (${combinedAudio.length / 16000}s)`);
+            
+            // Check minimum length
+            if (combinedAudio.length < 16000) {
+                console.warn('Audio too short for transcription');
+                this.isProcessing = false;
+                return;
+            }
+            
+            // Check audio quality
+            const rms = Math.sqrt(combinedAudio.reduce((sum, val) => sum + val * val, 0) / combinedAudio.length);
+            if (rms < 0.001) {
+                console.warn('Audio appears to be silent');
+                this.isProcessing = false;
+                return;
+            }
+            
+            console.log(`Processing ${combinedAudio.length} samples, RMS: ${rms.toFixed(4)}`);
+            
+            // Transcribe with Whisper
+            const result = await this.pipeline(combinedAudio, {
+                language: this.currentLanguage === 'auto' ? null : this.currentLanguage,
+                task: 'transcribe',
+                return_timestamps: false,
+                chunk_length_s: 30,
+                stride_length_s: 5,
+                temperature: 0.0,
+                condition_on_previous_text: false,
+                no_timestamps: true,
+            });
+            
+            // Handle the result
+            if (result && result.text) {
+                let transcription = result.text.trim();
+                
+                console.log('Raw transcription:', transcription);
+                
+                if (this.isValidTranscription(transcription)) {
+                    // Update detected language
+                    if (result.language) {
+                        this.lastDetectedLanguage = result.language;
+                        console.log(`Whisper detected language: ${result.language}`);
+                    }
+                    
+                    // Display transcription
+                    this.elements.originalText.textContent = transcription;
+                    
+                    // Translate if needed
+                    if (this.targetLanguage !== this.currentLanguage && this.targetLanguage !== 'auto') {
+                        this.translateText(transcription);
+                    } else {
+                        this.elements.translatedText.textContent = transcription;
+                    }
+                    
+                    console.log('Valid transcription:', transcription);
+                } else {
+                    console.log('Filtered out invalid transcription:', transcription);
+                }
+            }
+            
+            this.updateStatus('Listening with Whisper AI (Web Audio)...', '🎤 On');
+            
+        } catch (error) {
+            console.error('Web Audio processing error:', error);
+            this.updateStatus('Transcription error - continuing...', '⚠️');
+            
+            setTimeout(() => {
+                this.updateStatus('Listening with Whisper AI (Web Audio)...', '🎤 On');
+            }, 2000);
+        } finally {
+            this.isProcessing = false;
+        }
+    }
+    
     // Enhanced transcription validation
     isValidTranscription(text) {
         if (!text || text.length < 2) return false;
@@ -622,6 +793,34 @@ class LiveTranslator {
             }
         }
         
+        // Clean up Web Audio API resources
+        if (this.audioProcessor) {
+            try {
+                this.audioProcessor.disconnect();
+                this.audioProcessor = null;
+            } catch (error) {
+                console.warn('Error disconnecting audio processor:', error);
+            }
+        }
+        
+        if (this.audioSource) {
+            try {
+                this.audioSource.disconnect();
+                this.audioSource = null;
+            } catch (error) {
+                console.warn('Error disconnecting audio source:', error);
+            }
+        }
+        
+        if (this.audioContext && this.audioContext.state !== 'closed') {
+            try {
+                this.audioContext.close();
+                this.audioContext = null;
+            } catch (error) {
+                console.warn('Error closing audio context:', error);
+            }
+        }
+        
         // Stop speech recognition
         if (this.recognition) {
             try {
@@ -643,8 +842,9 @@ class LiveTranslator {
             this.audioStream = null;
         }
         
-        // Clear any pending audio chunks
+        // Clear any pending audio chunks and samples
         this.audioChunks = [];
+        this.audioSamples = [];
         
         // Reset processing flag
         this.isProcessing = false;
