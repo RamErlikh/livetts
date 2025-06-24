@@ -431,14 +431,26 @@ class LiveTranslator {
             
             // Enhanced audio quality checks
             const rms = Math.sqrt(audio.reduce((sum, val) => sum + val * val, 0) / audio.length);
-            if (rms < 0.002) { // Slightly more lenient threshold
-                console.warn('Audio appears to be very quiet, but processing anyway...');
-                // Don't return - still try to process quiet audio
+            console.log(`Audio RMS: ${rms.toFixed(4)}`);
+            
+            // More strict threshold for very quiet audio that produces artifacts
+            if (rms < 0.005) {
+                console.warn('Audio too quiet for reliable transcription, skipping...');
+                this.isProcessing = false;
+                return;
             }
             
             // Check for digital noise/artifacts (very high RMS indicates corrupted audio)
-            if (rms > 0.5) {
+            if (rms > 0.3) {
                 console.warn('Audio appears to be corrupted or too loud');
+                this.isProcessing = false;
+                return;
+            }
+            
+            // Check for silence (flat audio signal)
+            const maxAmplitude = Math.max(...audio.map(Math.abs));
+            if (maxAmplitude < 0.01) {
+                console.warn('Audio appears to be mostly silent, skipping...');
                 this.isProcessing = false;
                 return;
             }
@@ -452,9 +464,11 @@ class LiveTranslator {
                 return_timestamps: false,
                 chunk_length_s: 30,
                 stride_length_s: 5,
-                temperature: 0.0, // Use deterministic decoding
+                temperature: 0.1, // Slightly higher for more diverse outputs
                 condition_on_previous_text: false, // Prevent random outputs
                 no_timestamps: true, // Disable timestamps to reduce artifacts
+                suppress_tokens: [50362, 50363, 50364, 50365], // Suppress common artifact tokens
+                no_speech_threshold: 0.6, // Higher threshold to avoid false positives
             });
             
             // Handle the result with enhanced validation
@@ -509,7 +523,7 @@ class LiveTranslator {
         }
     }
     
-    // Enhanced transcription validation - made much less aggressive for international languages
+    // Enhanced transcription validation - filter out Whisper artifacts but allow real speech
     isValidTranscription(text) {
         if (!text || text.length < 1) {
             console.log('Validation failed: Empty text');
@@ -518,15 +532,36 @@ class LiveTranslator {
         
         console.log('Validating transcription:', JSON.stringify(text), 'Length:', text.length);
         
-        // Only filter completely empty or whitespace-only text
+        // Filter out common Whisper artifacts and training phrases
+        const whisperArtifacts = [
+            'thanks for watching', 'thanks for listening', 'subscribe', 'like and subscribe',
+            '[blank_audio]', '[music]', '[applause]', '[noise]', '[background music]', 
+            '[laughter]', 'thank you for watching', 'please subscribe', 'don\'t forget to subscribe',
+            'see you next time', 'catch you later', 'bye for now'
+        ];
+        
+        const lowerText = text.toLowerCase().trim();
+        for (const artifact of whisperArtifacts) {
+            if (lowerText === artifact || lowerText.includes(artifact)) {
+                console.log('Validation failed: Contains Whisper artifact:', artifact);
+                return false;
+            }
+        }
+        
+        // Filter extremely repetitive patterns (single character repeated many times)
+        if (/^(.)\1{10,}$/.test(text.trim())) {
+            console.log('Validation failed: Single character repeated 10+ times');
+            return false;
+        }
+        
+        // Filter only completely empty or whitespace-only text
         const trimmed = text.trim();
         if (trimmed.length === 0) {
             console.log('Validation failed: Only whitespace');
             return false;
         }
         
-        // Accept ALL other text - no filtering for artifacts or patterns
-        // Russian, Japanese, Korean, Chinese, English - everything passes
+        // Accept all other text - Russian, Japanese, Korean, Chinese, English, etc.
         console.log('Validation PASSED for:', JSON.stringify(text));
         return true;
     }
@@ -819,28 +854,14 @@ class LiveTranslator {
                     serviceUsed = 'Fallback';
                 }
             } else {
-                // Try MyMemory with better language support
+                // Skip MyMemory since it's failing - use simple translation or fallback
                 try {
-                    const result = await this.translateWithMyMemory(text, sourceLanguage);
-                    if (result && result.trim() && 
-                        !result.includes('[Translation failed]') && 
-                        result.toLowerCase() !== text.toLowerCase()) {
-                        translatedText = result;
-                        serviceUsed = 'MyMemory';
-                    } else {
-                        throw new Error('No valid translation from MyMemory');
-                    }
-                } catch (error) {
-                    console.warn('MyMemory failed:', error.message);
-                    // Use simple translation service for common languages
-                    try {
-                        translatedText = await this.translateWithSimpleAPI(text, sourceLanguage);
-                        serviceUsed = 'Simple Translation';
-                    } catch (simpleError) {
-                        console.warn('Simple translation failed:', simpleError.message);
-                        translatedText = await this.translateWithFallback(text, sourceLanguage);
-                        serviceUsed = 'Fallback Display';
-                    }
+                    translatedText = await this.translateWithSimpleAPI(text, sourceLanguage);
+                    serviceUsed = 'Simple Translation';
+                } catch (simpleError) {
+                    console.warn('Simple translation failed:', simpleError.message);
+                    translatedText = await this.translateWithFallback(text, sourceLanguage);
+                    serviceUsed = 'Fallback Display';
                 }
             }
             
