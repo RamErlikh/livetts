@@ -296,16 +296,17 @@ class LiveTranslator {
             this.mediaRecorder.onstop = () => {
                 console.log('MediaRecorder stopped for processing');
                 
-                // START NEW RECORDING IMMEDIATELY - before processing starts
+                // Process the complete audio segment immediately (don't wait)
+                if (this.audioChunks.length > 0 && this.isListening) {
+                    // Process in background while continuing to record
+                    this.processAudioWithWhisper();
+                }
+                
+                // START NEW RECORDING IMMEDIATELY - even during processing
                 if (this.isListening) {
                     setTimeout(() => {
                         this.startRecordingSegments();
                     }, 50); // Start next segment immediately
-                }
-                
-                // Process the complete audio segment
-                if (this.audioChunks.length > 0 && this.isListening && !this.isProcessing) {
-                    this.processAudioWithWhisper();
                 }
             };
             
@@ -403,8 +404,11 @@ class LiveTranslator {
             clearTimeout(this.recordingInterval);
         }
         
-        // Clear previous chunks
-        this.audioChunks = [];
+        // Only clear chunks if we're not currently processing
+        // This prevents interference with ongoing processing
+        if (!this.isProcessing) {
+            this.audioChunks = [];
+        }
         
         console.log('Starting new recording segment...');
         
@@ -588,24 +592,36 @@ class LiveTranslator {
                     // Display transcription immediately (simple approach)
                     this.elements.originalText.textContent = transcription;
                     
-                    // Translate if needed
-                    if (this.targetLanguage !== this.currentLanguage && this.targetLanguage !== 'auto') {
-                        console.log(`Translating from ${this.lastDetectedLanguage || this.currentLanguage} to ${this.targetLanguage}`);
-                        this.translateText(transcription).then(translation => {
-                            this.elements.translatedText.textContent = translation;
-                            this.addToHistory(transcription, translation);
-                            
-                            // TTS if enabled and translation is different from original
-                            if (this.elements.autoSpeak.checked && 
-                                translation && 
-                                translation !== transcription &&
-                                !translation.includes('[') && 
-                                !translation.includes('→')) {
-                                console.log('🔊 Speaking translation:', translation);
-                                this.speakText(translation);
+                    // Always attempt translation (unless same language)
+                    const sourceLang = this.lastDetectedLanguage || this.currentLanguage || 'auto';
+                    if (this.targetLanguage !== sourceLang && this.targetLanguage !== 'auto') {
+                        console.log(`Translating from ${sourceLang} to ${this.targetLanguage}`);
+                        this.translateText(transcription, sourceLang).then(translation => {
+                            if (translation && translation !== transcription) {
+                                this.elements.translatedText.textContent = translation;
+                                this.addToHistory(transcription, translation);
+                                
+                                // TTS if enabled and translation is different from original
+                                if (this.elements.autoSpeak.checked && 
+                                    translation && 
+                                    translation !== transcription &&
+                                    !translation.includes('[') && 
+                                    !translation.includes('→')) {
+                                    console.log('🔊 Speaking translation:', translation);
+                                    this.speakText(translation);
+                                }
+                            } else {
+                                // No translation available, just show original
+                                this.elements.translatedText.textContent = transcription;
+                                this.addToHistory(transcription, transcription);
                             }
+                        }).catch(error => {
+                            console.error('Translation failed:', error);
+                            this.elements.translatedText.textContent = transcription;
+                            this.addToHistory(transcription, transcription);
                         });
                     } else {
+                        // Same language or no target language
                         this.elements.translatedText.textContent = transcription;
                         this.addToHistory(transcription, transcription);
                     }
@@ -709,22 +725,36 @@ class LiveTranslator {
                     // Display transcription immediately
                     this.elements.originalText.textContent = transcription;
                     
-                    // Translate if needed
-                    if (this.targetLanguage !== this.currentLanguage && this.targetLanguage !== 'auto') {
-                        this.translateText(transcription).then(translation => {
-                            this.elements.translatedText.textContent = translation;
-                            this.addToHistory(transcription, translation);
-                            
-                            // TTS if enabled
-                            if (this.elements.autoSpeak.checked && 
-                                translation && 
-                                translation !== transcription &&
-                                !translation.includes('[') && 
-                                !translation.includes('→')) {
-                                this.speakText(translation);
+                    // Always attempt translation (unless same language)
+                    const sourceLang = this.lastDetectedLanguage || this.currentLanguage || 'auto';
+                    if (this.targetLanguage !== sourceLang && this.targetLanguage !== 'auto') {
+                        console.log(`Translating from ${sourceLang} to ${this.targetLanguage}`);
+                        this.translateText(transcription, sourceLang).then(translation => {
+                            if (translation && translation !== transcription) {
+                                this.elements.translatedText.textContent = translation;
+                                this.addToHistory(transcription, translation);
+                                
+                                // TTS if enabled and translation is different from original
+                                if (this.elements.autoSpeak.checked && 
+                                    translation && 
+                                    translation !== transcription &&
+                                    !translation.includes('[') && 
+                                    !translation.includes('→')) {
+                                    console.log('🔊 Speaking translation:', translation);
+                                    this.speakText(translation);
+                                }
+                            } else {
+                                // No translation available, just show original
+                                this.elements.translatedText.textContent = transcription;
+                                this.addToHistory(transcription, transcription);
                             }
+                        }).catch(error => {
+                            console.error('Translation failed:', error);
+                            this.elements.translatedText.textContent = transcription;
+                            this.addToHistory(transcription, transcription);
                         });
                     } else {
+                        // Same language or no target language
                         this.elements.translatedText.textContent = transcription;
                         this.addToHistory(transcription, transcription);
                     }
