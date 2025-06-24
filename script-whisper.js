@@ -511,38 +511,42 @@ class LiveTranslator {
     
     // Enhanced transcription validation - made much less aggressive for international languages
     isValidTranscription(text) {
-        if (!text || text.length < 1) return false;
+        if (!text || text.length < 1) {
+            console.log('Validation failed: Empty text');
+            return false;
+        }
         
-        // Only filter out obvious technical artifacts
+        console.log('Validating transcription:', JSON.stringify(text), 'Length:', text.length);
+        
+        // Only filter out obvious technical artifacts - be very specific
         const technicalArtifacts = [
-            '[Music]', '[Applause]', '[Noise]', '[Background music]', '[Laughter]', '[BLANK_AUDIO]'
+            '[music]', '[applause]', '[noise]', '[background music]', '[laughter]', '[blank_audio]',
+            'thanks for watching', 'thanks for listening', 'subscribe', 'like and subscribe'
         ];
         
         // Check for exact matches with technical artifacts only
-        const lowerText = text.toLowerCase();
-        if (technicalArtifacts.some(artifact => lowerText.includes(artifact.toLowerCase()))) {
+        const lowerText = text.toLowerCase().trim();
+        for (const artifact of technicalArtifacts) {
+            if (lowerText === artifact || lowerText.includes(artifact)) {
+                console.log('Validation failed: Contains technical artifact:', artifact);
+                return false;
+            }
+        }
+        
+        // Only filter EXTREMELY obvious repetitive garbage - single character repeated many times
+        if (/^(.)\1{15,}$/.test(text.trim())) {
+            console.log('Validation failed: Single character repeated 15+ times');
             return false;
         }
         
-        // Only filter VERY extreme repetitive patterns
-        const extremePatterns = [
-            /^(.)\1{20,}$/, // Single character repeated 20+ times
-            /^\[(.)\]\s*\[(.)\]\s*\[(.)\]\s*\[(.)\]\s*\[(.)\]/, // 5+ bracketed characters
-        ];
-        
-        if (extremePatterns.some(pattern => pattern.test(text))) {
-            console.log('Filtered extreme pattern:', text);
+        // Filter only completely empty or whitespace-only text
+        if (text.trim().length === 0) {
+            console.log('Validation failed: Only whitespace');
             return false;
         }
         
-        // Check for encoding artifacts only
-        if (text.includes('') || text.includes('\ufffd')) {
-            console.log('Filtered encoding artifact:', text);
-            return false;
-        }
-        
-        // Allow all normal text - international languages, short phrases, etc.
-        console.log('Validation passed for:', text);
+        // Accept ALL other text - international languages, short phrases, everything
+        console.log('Validation PASSED for:', JSON.stringify(text));
         return true;
     }
     
